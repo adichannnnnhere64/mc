@@ -1,0 +1,10 @@
+{
+  "connections": [
+    {
+      "name": "betlog",
+      "path": "/home/adrian/dockers/bedrock/data",
+      "is_symlink": false,
+      "created_at": 1772537292
+    }
+  ]
+}
