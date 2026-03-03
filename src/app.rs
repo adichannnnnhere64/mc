@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};  // Add Path here
+use std::path::{Path, PathBuf};
 
 
 
@@ -6,9 +6,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::DefaultTerminal;
 
 use crate::{
-    connection::{ ConnectionConfig},
+    connection::ConnectionConfig,
     event::{AppEvent, Event, EventHandler},
-    server::{ServerInstance, discover_servers},
+    server::{discover_servers, read_docker_logs, ServerInstance},
     ui,
 };
 
@@ -19,6 +19,8 @@ pub enum AppMode {
     AddConnection { input: String, path_input: String, step: ConnectionStep },
     ManageConnections,
     RemoveConnection { selected: usize },
+    ViewLogs { scroll: usize },
+    ManagePacks { selected: usize },
 }
 
 #[derive(Debug, PartialEq)]
@@ -40,6 +42,7 @@ pub struct App {
     pub events: EventHandler,
     pub connections: ConnectionConfig,
     pub selected_connection: usize,
+    pub log_lines: Vec<String>,
 }
 
 
@@ -67,6 +70,7 @@ impl App {
             events: EventHandler::new(),
             connections,
             selected_connection: 0,
+            log_lines: Vec::new(),
         }
     }
 
@@ -95,6 +99,8 @@ impl App {
             AppMode::AddConnection { .. } => self.handle_add_connection_key(key),
             AppMode::ManageConnections => self.handle_manage_connections_key(key),
             AppMode::RemoveConnection { .. } => self.handle_remove_connection_key(key),
+            AppMode::ViewLogs { .. } => self.handle_view_logs_key(key),
+            AppMode::ManagePacks { .. } => self.handle_manage_packs_key(key),
         }
         Ok(())
     }
@@ -134,9 +140,30 @@ impl App {
                 self.selected_connection = 0;
             }
 
+            KeyCode::Char('p') => {
+                if !self.servers.is_empty() {
+                    self.mode = AppMode::ManagePacks { selected: 0 };
+                }
+            }
             KeyCode::Char('r') => {
                 self.refresh_servers();
                 self.message = Some("Server list refreshed.".into());
+            }
+            KeyCode::Char('l') => {
+                if self.servers.is_empty() {
+                    return;
+                }
+                let container = self.servers[self.selected].container_name.clone();
+                match container {
+                    Some(c) => {
+                        self.mode = AppMode::ViewLogs { scroll: usize::MAX };
+                        self.message = Some("Loading logs…".into());
+                        self.run_load_logs(c);
+                    }
+                    None => {
+                        self.message = Some("No Docker container linked to this server.".into());
+                    }
+                }
             }
             _ => {}
         }
@@ -320,6 +347,117 @@ impl App {
         }
     }
 
+    fn handle_view_logs_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Down => {
+                if let AppMode::ViewLogs { scroll } = &mut self.mode {
+                    *scroll = scroll.saturating_add(1);
+                }
+            }
+            KeyCode::Up => {
+                if let AppMode::ViewLogs { scroll } = &mut self.mode {
+                    *scroll = scroll.saturating_sub(1);
+                }
+            }
+            KeyCode::PageDown => {
+                if let AppMode::ViewLogs { scroll } = &mut self.mode {
+                    *scroll = scroll.saturating_add(20);
+                }
+            }
+            KeyCode::PageUp => {
+                if let AppMode::ViewLogs { scroll } = &mut self.mode {
+                    *scroll = scroll.saturating_sub(20);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_manage_packs_key(&mut self, key: KeyEvent) {
+        let total = if self.servers.is_empty() {
+            0
+        } else {
+            let s = &self.servers[self.selected];
+            s.installed_resource_packs.len() + s.installed_behavior_packs.len()
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Up => {
+                if let AppMode::ManagePacks { selected } = &mut self.mode {
+                    *selected = selected.saturating_sub(1);
+                }
+            }
+            KeyCode::Down => {
+                if let AppMode::ManagePacks { selected } = &mut self.mode {
+                    if *selected + 1 < total {
+                        *selected += 1;
+                    }
+                }
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                let idx = if let AppMode::ManagePacks { selected } = &self.mode {
+                    *selected
+                } else {
+                    return;
+                };
+                self.toggle_pack(idx);
+            }
+            _ => {}
+        }
+    }
+
+    fn toggle_pack(&mut self, selected: usize) {
+        if self.servers.is_empty() {
+            return;
+        }
+        let server = &self.servers[self.selected];
+        let rp_len = server.installed_resource_packs.len();
+
+        let (json_path, uuid, version, currently_enabled) = if selected < rp_len {
+            let pack = &server.installed_resource_packs[selected];
+            (
+                server.path.join("resource_packs.json"),
+                pack.uuid.clone(),
+                pack.version.clone(),
+                pack.enabled,
+            )
+        } else {
+            let pack = &server.installed_behavior_packs[selected - rp_len];
+            (
+                server.path.join("behavior_packs.json"),
+                pack.uuid.clone(),
+                pack.version.clone(),
+                pack.enabled,
+            )
+        };
+
+        match crate::plugin::installer::set_pack_enabled(
+            &json_path,
+            &uuid,
+            &version,
+            !currently_enabled,
+        ) {
+            Ok(()) => {
+                self.message = Some(if currently_enabled {
+                    format!("Disabled '{uuid}'")
+                } else {
+                    format!("Enabled '{uuid}'")
+                });
+            }
+            Err(e) => {
+                self.message = Some(format!("Toggle error: {e}"));
+            }
+        }
+
+        self.refresh_servers();
+    }
+
     fn handle_app_event(&mut self, event: AppEvent) {
         match event {
             AppEvent::Quit => self.running = false,
@@ -343,8 +481,15 @@ impl App {
                     self.message = Some(format!("Install error: {err}"));
                 }
             },
+            AppEvent::LogsLoaded(lines) => {
+                self.log_lines = lines;
+                self.message = None;
+                // Scroll to bottom so the most recent entries are visible
+                if let AppMode::ViewLogs { scroll } = &mut self.mode {
+                    *scroll = self.log_lines.len().saturating_sub(1);
+                }
+            }
         }
-
     }
 
     fn refresh_servers(&mut self) {
@@ -353,15 +498,31 @@ impl App {
     }
 
 
+    fn run_load_logs(&self, container: String) {
+        let sender = self.events.sender();
+        tokio::spawn(async move {
+            let lines = tokio::task::spawn_blocking(move || read_docker_logs(&container, 300))
+                .await
+                .unwrap_or_default();
+            let _ = sender.send(Event::App(AppEvent::LogsLoaded(lines)));
+        });
+    }
+
     fn run_install(&self, path: PathBuf) {
         let server_path = self.servers[self.selected].path.clone();
         let sender = self.events.sender();
         tokio::spawn(async move {
             let result = tokio::task::spawn_blocking(move || {
                 crate::plugin::installer::install(&path, &server_path)
-                    .map(|r| format!("Installed '{}' ({})", r.pack_name, r.pack_type))
+                    .map(|results| {
+                        let names = results
+                            .iter()
+                            .map(|r| format!("'{}' ({})", r.pack_name, r.pack_type))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("Installed: {names}")
+                    })
                     .map_err(|e| e.to_string())
-
             })
             .await;
             let msg = match result {

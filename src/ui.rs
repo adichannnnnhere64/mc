@@ -12,7 +12,7 @@ use ratatui::{
 
 use crate::{
     app::{App, AppMode, ConnectionStep},
-    server::{ServerStatus, ServerType},  // Add ServerType here
+    server::{ServerStatus, ServerType},
 };
 
 pub fn render(app: &App, frame: &mut Frame) {
@@ -36,7 +36,6 @@ pub fn render(app: &App, frame: &mut Frame) {
 
     match &app.mode {
         AppMode::Installing { input } => {
-
             render_install_modal(input, frame, area);
         }
         AppMode::AddConnection { input, path_input, step } => {
@@ -125,9 +124,175 @@ fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
+// ─── Log Panel ──────────────────────────────────────────────────────────────
+
+fn render_log_panel(app: &App, scroll: usize, frame: &mut Frame, area: Rect) {
+    let server = &app.servers[app.selected];
+    let container = server
+        .container_name
+        .as_deref()
+        .unwrap_or("unknown");
+
+    let block = Block::bordered()
+        .title(format!(" Logs: {} ", container))
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Green));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let visible = inner.height as usize;
+    let total = app.log_lines.len();
+
+    // Clamp scroll so the last page is the floor
+    let max_scroll = total.saturating_sub(visible);
+    let scroll = scroll.min(max_scroll);
+
+    let lines: Vec<Line> = app
+        .log_lines
+        .iter()
+        .skip(scroll)
+        .take(visible)
+        .map(|l| {
+            let color = if l.contains("ERROR") || l.contains("error") {
+                Color::Red
+            } else if l.contains("WARN") {
+                Color::Yellow
+            } else if l.contains("INFO") {
+                Color::White
+            } else {
+                Color::DarkGray
+            };
+            Line::from(Span::styled(l.clone(), Style::default().fg(color)))
+        })
+        .collect();
+
+    let footer = format!(" {}/{} lines ", scroll + lines.len().min(visible), total);
+    let footer_line = Line::from(Span::styled(footer, Style::default().fg(Color::DarkGray)));
+
+    // Split inner area: log lines + 1-line footer
+    let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(inner);
+    frame.render_widget(Paragraph::new(Text::from(lines)), chunks[0]);
+    frame.render_widget(
+        Paragraph::new(footer_line).alignment(Alignment::Right),
+        chunks[1],
+    );
+}
+
+// ─── Manage Packs Panel ─────────────────────────────────────────────────────
+
+fn render_manage_packs(app: &App, selected: usize, frame: &mut Frame, area: Rect) {
+    let server = &app.servers[app.selected];
+
+    let block = Block::bordered()
+        .title(" Manage Packs ")
+        .title_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Yellow));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
+
+    let hint = Line::from(vec![
+        Span::styled(" ↑↓ ", Style::default().fg(Color::Cyan)),
+        Span::raw("navigate  "),
+        Span::styled("Space/Enter ", Style::default().fg(Color::Cyan)),
+        Span::raw("toggle  "),
+        Span::styled("Esc ", Style::default().fg(Color::Red)),
+        Span::raw("back"),
+    ]);
+    frame.render_widget(Paragraph::new(hint), chunks[0]);
+
+    let rp = &server.installed_resource_packs;
+    let bp = &server.installed_behavior_packs;
+
+    let mut items: Vec<ListItem> = Vec::new();
+
+    // ── Resource Packs ──
+    items.push(ListItem::new(Line::from(Span::styled(
+        "  Resource Packs",
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+    ))));
+    if rp.is_empty() {
+        items.push(ListItem::new(Line::from(Span::styled(
+            "    (none installed)",
+            Style::default().fg(Color::DarkGray),
+        ))));
+    } else {
+        for (i, pack) in rp.iter().enumerate() {
+            items.push(pack_manage_item(pack.enabled, &pack.name, &pack.version, i == selected));
+        }
+    }
+
+    items.push(ListItem::new(Line::from("")));
+
+    // ── Behavior Packs ──
+    items.push(ListItem::new(Line::from(Span::styled(
+        "  Behavior Packs",
+        Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+    ))));
+    if bp.is_empty() {
+        items.push(ListItem::new(Line::from(Span::styled(
+            "    (none installed)",
+            Style::default().fg(Color::DarkGray),
+        ))));
+    } else {
+        let rp_len = rp.len();
+        for (i, pack) in bp.iter().enumerate() {
+            items.push(pack_manage_item(
+                pack.enabled,
+                &pack.name,
+                &pack.version,
+                rp_len + i == selected,
+            ));
+        }
+    }
+
+    frame.render_widget(List::new(items), chunks[1]);
+}
+
+fn pack_manage_item(enabled: bool, name: &str, version: &[u32], highlighted: bool) -> ListItem<'static> {
+    let (badge, badge_color) = if enabled {
+        ("[✓]", Color::Green)
+    } else {
+        ("[✗]", Color::DarkGray)
+    };
+    let ver = version
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(".");
+    let line = Line::from(vec![
+        Span::styled(format!("  {badge} "), Style::default().fg(badge_color)),
+        Span::raw(name.to_owned()),
+        Span::styled(format!("  v{ver}"), Style::default().fg(Color::DarkGray)),
+    ]);
+    let style = if highlighted {
+        Style::default()
+            .bg(Color::Blue)
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    ListItem::new(line).style(style)
+}
+
 // ─── Detail Panel ───────────────────────────────────────────────────────────
 
 fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
+    if let AppMode::ViewLogs { scroll } = &app.mode {
+        render_log_panel(app, *scroll, frame, area);
+        return;
+    }
+    if let AppMode::ManagePacks { selected } = &app.mode {
+        render_manage_packs(app, *selected, frame, area);
+        return;
+    }
+
     let block = Block::bordered()
         .title(" Server Details ")
 
@@ -321,6 +486,10 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
                 Span::raw("  "),
                 kb(" i ", "install"),
                 Span::raw("  "),
+                kb(" p ", "packs"),
+                Span::raw("  "),
+                kb(" l ", "logs"),
+                Span::raw("  "),
                 kb(" r ", "refresh"),
             ]),
             AppMode::Installing { .. } => Line::from(vec![
@@ -360,8 +529,21 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
                 Span::raw("  "),
                 kb(" y ", "yes"),
                 Span::raw("  "),
-
                 kb(" n ", "no"),
+            ]),
+            AppMode::ViewLogs { .. } => Line::from(vec![
+                kb(" ↑↓ ", "scroll"),
+                Span::raw("  "),
+                kb(" PgUp/PgDn ", "page"),
+                Span::raw("  "),
+                kb(" Esc ", "back"),
+            ]),
+            AppMode::ManagePacks { .. } => Line::from(vec![
+                kb(" ↑↓ ", "navigate"),
+                Span::raw("  "),
+                kb(" Space/Enter ", "toggle"),
+                Span::raw("  "),
+                kb(" Esc ", "back"),
             ]),
         }
     };

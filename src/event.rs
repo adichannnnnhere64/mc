@@ -20,6 +20,7 @@ pub enum AppEvent {
     SelectPrev,
     InstallPlugin(PathBuf),
     InstallDone(Result<String, String>),
+    LogsLoaded(Vec<String>),
 }
 
 #[derive(Debug)]

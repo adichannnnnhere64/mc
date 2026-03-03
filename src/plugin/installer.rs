@@ -15,9 +15,9 @@ pub struct InstallResult {
     pub pack_type: PackType,
 }
 
-/// Install a plugin/addon from `source_path` into the server at `server_path`.
-pub fn install(source_path: &Path, server_path: &Path) -> color_eyre::Result<InstallResult> {
-    // Resolve the directory containing the manifest
+/// Install all packs found in `source_path` into the server at `server_path`.
+/// A single archive may contain both a BP and RP — both are installed.
+pub fn install(source_path: &Path, server_path: &Path) -> color_eyre::Result<Vec<InstallResult>> {
     let manifest_dir = if source_path.is_dir() {
         source_path.to_path_buf()
     } else {
@@ -30,10 +30,33 @@ pub fn install(source_path: &Path, server_path: &Path) -> color_eyre::Result<Ins
         tmp
     };
 
-    let manifest_path = find_manifest(&manifest_dir)
-        .ok_or_else(|| color_eyre::eyre::eyre!("manifest.json not found in archive"))?;
+    let manifest_paths = find_all_manifests(&manifest_dir);
+    if manifest_paths.is_empty() {
+        cleanup_tmp(server_path);
+        return Err(color_eyre::eyre::eyre!("No manifest.json found in archive"));
+    }
 
-    let manifest_content = fs::read_to_string(&manifest_path)?;
+    let mut results = Vec::new();
+    let mut errors = Vec::new();
+
+    for manifest_path in &manifest_paths {
+        match install_single(manifest_path, server_path) {
+            Ok(r) => results.push(r),
+            Err(e) => errors.push(e.to_string()),
+        }
+    }
+
+    cleanup_tmp(server_path);
+
+    if results.is_empty() {
+        return Err(color_eyre::eyre::eyre!("{}", errors.join("; ")));
+    }
+
+    Ok(results)
+}
+
+fn install_single(manifest_path: &Path, server_path: &Path) -> color_eyre::Result<InstallResult> {
+    let manifest_content = fs::read_to_string(manifest_path)?;
     let manifest: Manifest = serde_json::from_str(&manifest_content)
         .map_err(|e| color_eyre::eyre::eyre!("Failed to parse manifest.json: {e}"))?;
 
@@ -48,9 +71,9 @@ pub fn install(source_path: &Path, server_path: &Path) -> color_eyre::Result<Ins
         PackType::Resources => ("resource_packs", "resource_packs.json"),
         PackType::Behavior => ("behavior_packs", "behavior_packs.json"),
         PackType::Unknown => {
-            cleanup_tmp(server_path);
             return Err(color_eyre::eyre::eyre!(
-                "Unknown pack type — check modules[].type in manifest.json"
+                "Unknown pack type in {}",
+                manifest_path.display()
             ));
         }
     };
@@ -65,30 +88,59 @@ pub fn install(source_path: &Path, server_path: &Path) -> color_eyre::Result<Ins
     let json_path = server_path.join(json_file);
     update_pack_list(&json_path, &manifest.header.uuid, &manifest.header.version)?;
 
-    cleanup_tmp(server_path);
-
-    Ok(InstallResult {
-        pack_name,
-        pack_type,
-    })
+    Ok(InstallResult { pack_name, pack_type })
 }
 
-/// Recursively find the first `manifest.json` in `dir`.
-fn find_manifest(dir: &Path) -> Option<PathBuf> {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return None;
+/// Enable or disable a pack by updating its JSON list file.
+/// `should_enable = true` adds the pack; `false` removes it.
+pub fn set_pack_enabled(
+    json_path: &Path,
+    uuid: &str,
+    version: &[u32],
+    should_enable: bool,
+) -> color_eyre::Result<()> {
+    let mut entries: Vec<PackEntry> = if json_path.exists() {
+        let content = fs::read_to_string(json_path)?;
+        serde_json::from_str(&content).unwrap_or_default()
+    } else {
+        Vec::new()
     };
+
+    if should_enable {
+        if !entries.iter().any(|e| e.pack_id == uuid) {
+            entries.push(PackEntry {
+                pack_id: uuid.to_string(),
+                version: version.to_vec(),
+            });
+        }
+    } else {
+        entries.retain(|e| e.pack_id != uuid);
+    }
+
+    if let Some(parent) = json_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(json_path, serde_json::to_string_pretty(&entries)?)?;
+    Ok(())
+}
+
+/// Recursively find all `manifest.json` files under `dir`.
+fn find_all_manifests(dir: &Path) -> Vec<PathBuf> {
+    let mut results = Vec::new();
+    collect_manifests(dir, &mut results);
+    results
+}
+
+fn collect_manifests(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            if let Some(found) = find_manifest(&path) {
-                return Some(found);
-            }
+            collect_manifests(&path, out);
         } else if path.file_name().is_some_and(|n| n == "manifest.json") {
-            return Some(path);
+            out.push(path);
         }
     }
-    None
 }
 
 fn copy_dir_all(src: &Path, dst: &Path) -> io::Result<()> {
@@ -107,7 +159,6 @@ fn copy_dir_all(src: &Path, dst: &Path) -> io::Result<()> {
 
 /// Read, deduplicate, and write `resource_packs.json` / `behavior_packs.json`.
 fn update_pack_list(json_path: &Path, uuid: &str, version: &[u32]) -> color_eyre::Result<()> {
-    // Backup existing file
     if json_path.exists() {
         let mut bak_name: OsString = json_path
             .file_name()
@@ -125,7 +176,6 @@ fn update_pack_list(json_path: &Path, uuid: &str, version: &[u32]) -> color_eyre
         Vec::new()
     };
 
-    // Deduplicate by UUID
     if !entries.iter().any(|e| e.pack_id == uuid) {
         entries.push(PackEntry {
             pack_id: uuid.to_string(),
