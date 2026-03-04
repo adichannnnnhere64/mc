@@ -47,9 +47,10 @@ impl fmt::Display for PackType {
 impl Manifest {
     pub fn pack_type(&self) -> PackType {
         for module in &self.modules {
-            match module.module_type.as_str() {
+            match module.module_type.to_ascii_lowercase().as_str() {
                 "resources" => return PackType::Resources,
-                "data" | "client_data" | "javascript" => return PackType::Behavior,
+                "data" | "client_data" | "server_data" | "javascript" | "script"
+                | "scripting" => return PackType::Behavior,
                 _ => {}
             }
         }

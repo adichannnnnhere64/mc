@@ -929,13 +929,21 @@ impl App {
         tokio::spawn(async move {
             let result = tokio::task::spawn_blocking(move || {
                 crate::plugin::installer::install(&path, &server_path, custom_name)
-                    .map(|results| {
-                        let names = results
+                    .map(|summary| {
+                        let names = summary
+                            .installed
                             .iter()
                             .map(|r| format!("'{}' ({})", r.pack_name, r.pack_type))
                             .collect::<Vec<_>>()
                             .join(", ");
-                        format!("Installed: {names}")
+                        if summary.skipped_errors.is_empty() {
+                            format!("Installed: {names}")
+                        } else {
+                            format!(
+                                "Installed: {names} | Skipped: {}",
+                                summary.skipped_errors.join(" | ")
+                            )
+                        }
                     })
                     .map_err(|e| e.to_string())
             })

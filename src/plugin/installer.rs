@@ -17,13 +17,18 @@ pub struct InstallResult {
     pub pack_type: PackType,
 }
 
+pub struct InstallSummary {
+    pub installed: Vec<InstallResult>,
+    pub skipped_errors: Vec<String>,
+}
+
 /// Install all packs found in `source_path` into the server at `server_path`.
 /// A single archive may contain both a BP and RP — both are installed.
 pub fn install(
     source_path: &Path,
     server_path: &Path,
     custom_name: Option<String>,
-) -> color_eyre::Result<Vec<InstallResult>> {
+) -> color_eyre::Result<InstallSummary> {
     let tmp = server_path.join(".tmp_install");
     if tmp.exists() {
         fs::remove_dir_all(&tmp)?;
@@ -71,10 +76,18 @@ pub fn install(
     cleanup_tmp(server_path);
 
     if results.is_empty() {
-        return Err(color_eyre::eyre::eyre!("{}", errors.join("; ")));
+        let msg = if errors.is_empty() {
+            "No installable packs found in archive".to_string()
+        } else {
+            errors.join("; ")
+        };
+        return Err(color_eyre::eyre::eyre!("{msg}"));
     }
 
-    Ok(results)
+    Ok(InstallSummary {
+        installed: results,
+        skipped_errors: errors,
+    })
 }
 
 fn install_single(
