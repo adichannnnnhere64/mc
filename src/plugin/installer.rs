@@ -22,6 +22,12 @@ pub struct InstallSummary {
     pub skipped_errors: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum ReorderDirection {
+    Up,
+    Down,
+}
+
 /// Install all packs found in `source_path` into the server at `server_path`.
 /// A single archive may contain both a BP and RP — both are installed.
 pub fn install(
@@ -183,6 +189,30 @@ pub fn set_pack_enabled(
     Ok(())
 }
 
+/// Reorder an enabled pack in world pack lists across all world directories.
+/// Returns `true` if at least one file changed.
+pub fn reorder_pack(
+    server_path: &Path,
+    uuid: &str,
+    is_resource: bool,
+    direction: ReorderDirection,
+) -> color_eyre::Result<bool> {
+    let world_json_file = if is_resource {
+        "world_resource_packs.json"
+    } else {
+        "world_behavior_packs.json"
+    };
+
+    let mut changed_any = false;
+    for world_dir in collect_world_dirs(server_path) {
+        let changed = reorder_pack_in_file(&world_dir.join(world_json_file), uuid, direction)?;
+        if changed {
+            changed_any = true;
+        }
+    }
+    Ok(changed_any)
+}
+
 fn set_pack_enabled_in_file(
     json_path: &Path,
 
@@ -214,6 +244,37 @@ fn set_pack_enabled_in_file(
         fs::write(json_path, serde_json::to_string_pretty(&entries)?)?;
     }
     Ok(())
+}
+
+fn reorder_pack_in_file(
+    json_path: &Path,
+    uuid: &str,
+    direction: ReorderDirection,
+) -> color_eyre::Result<bool> {
+    if !json_path.exists() {
+        return Ok(false);
+    }
+
+    let content = fs::read_to_string(json_path)?;
+    let mut entries: Vec<PackEntry> = serde_json::from_str(&content)
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to parse {}: {e}", json_path.display()))?;
+    if entries.len() < 2 {
+        return Ok(false);
+    }
+
+    let Some(idx) = entries.iter().position(|e| e.pack_id == uuid) else {
+        return Ok(false);
+    };
+
+    let swap_idx = match direction {
+        ReorderDirection::Up if idx > 0 => idx - 1,
+        ReorderDirection::Down if idx + 1 < entries.len() => idx + 1,
+        _ => return Ok(false),
+    };
+
+    entries.swap(idx, swap_idx);
+    fs::write(json_path, serde_json::to_string_pretty(&entries)?)?;
+    Ok(true)
 }
 
 /// Recursively find all `manifest.json` files under `dir`.

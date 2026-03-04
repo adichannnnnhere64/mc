@@ -352,7 +352,7 @@ fn discover_installed_packs(pack_dir: &Path, enabled_entries: &[PackEntry]) -> V
         return Vec::new();
     };
 
-    let mut packs: Vec<InstalledPack> = entries
+    let mut installed: Vec<InstalledPack> = entries
         .flatten()
         .filter(|e| e.path().is_dir())
         .filter_map(|e| {
@@ -360,18 +360,30 @@ fn discover_installed_packs(pack_dir: &Path, enabled_entries: &[PackEntry]) -> V
             let content = fs::read_to_string(&manifest_path).ok()?;
 
             let m: DiskManifest = serde_json::from_str(&content).ok()?;
-            let enabled = enabled_entries.iter().any(|ep| ep.pack_id == m.header.uuid);
             Some(InstalledPack {
                 name: m.header.name.unwrap_or_else(|| m.header.uuid.clone()),
-                enabled,
+                enabled: false,
                 uuid: m.header.uuid,
                 version: m.header.version,
             })
         })
         .collect();
 
-    packs.sort_by(|a, b| a.name.cmp(&b.name));
-    packs
+    let mut ordered: Vec<InstalledPack> = Vec::with_capacity(installed.len());
+
+    // Preserve JSON order for enabled packs first.
+    for entry in enabled_entries {
+        if let Some(pos) = installed.iter().position(|p| p.uuid == entry.pack_id) {
+            let mut pack = installed.remove(pos);
+            pack.enabled = true;
+            ordered.push(pack);
+        }
+    }
+
+    // Append disabled packs in stable alphabetical order.
+    installed.sort_by(|a, b| a.name.cmp(&b.name));
+    ordered.extend(installed);
+    ordered
 }
 
 fn detect_server_config(server_path: &Path) -> (ServerType, Option<u16>) {
