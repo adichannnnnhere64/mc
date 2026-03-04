@@ -1,8 +1,7 @@
 use std::fmt;
+use serde::{Deserialize, Serialize}; // Add Serialize
 
-use serde::Deserialize;
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)] // Added Serialize
 pub struct Manifest {
     pub format_version: u32,
     pub header: ManifestHeader,
@@ -10,23 +9,27 @@ pub struct Manifest {
     pub modules: Vec<ManifestModule>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)] // Added Serialize
 pub struct ManifestHeader {
     pub uuid: String,
     pub version: Vec<u32>,
     pub name: Option<String>,
     pub description: Option<String>,
+
 }
 
-#[derive(Debug, Deserialize)]
+
+#[derive(Debug, Deserialize, Serialize)] // Added Serialize
 pub struct ManifestModule {
     #[serde(rename = "type")]
     pub module_type: String,
     pub uuid: String,
+
     pub version: Vec<u32>,
 }
 
 #[derive(Debug)]
+
 pub enum PackType {
     Resources,
     Behavior,
@@ -44,7 +47,6 @@ impl fmt::Display for PackType {
 }
 
 impl Manifest {
-    /// Determine the pack type from module declarations.
     pub fn pack_type(&self) -> PackType {
         for module in &self.modules {
             match module.module_type.as_str() {

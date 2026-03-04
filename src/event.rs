@@ -18,7 +18,7 @@ pub enum AppEvent {
     Quit,
     SelectNext,
     SelectPrev,
-    InstallPlugin(PathBuf),
+    InstallPlugin(PathBuf, Option<String>), // path, optional custom name
     InstallDone(Result<String, String>),
     LogsLoaded(Vec<String>),
     // NEW: Periodic status update trigger

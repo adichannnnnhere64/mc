@@ -1,46 +1,37 @@
-use std::fs;  // Add this import
-use std::collections::HashMap; // Add at top
+use std::collections::HashMap;
+use std::fs; // Add this import // Add at top
 
 //
 
 use ratatui::{
-    layout::{Alignment, Constraint, Margin,  Layout, Rect},
+    Frame,
+    layout::{Alignment, Constraint, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph, Wrap},
-    Frame,
 };
 
-
 use crate::{
-    app::{App, AppMode, ConnectionStep},
+    app::{App, AppMode, ConnectionStep, InstallStep},
     server::{ServerStatus, ServerType},
 };
 
 pub fn render(app: &App, frame: &mut Frame) {
-
     let area = frame.area();
-
-    // Vertical: main area + 1-line status bar
-
     let vertical = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
-
-    // Horizontal: 30% sidebar + 70% detail
-    let horizontal =
-
-        Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
-            .split(vertical[0]);
+    let horizontal = Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
+        .split(vertical[0]);
 
     render_sidebar(app, frame, horizontal[0]);
     render_detail(app, frame, horizontal[1]);
     render_status_bar(app, frame, vertical[1]);
 
-
     match &app.mode {
-        AppMode::Installing { input } => {
-            render_install_modal(input, frame, area);
+        AppMode::Installing { .. } => {  // No need to destructure here, just pass app
+            render_install_modal(app, frame, area);
         }
         AppMode::AddConnection { input, path_input, step } => {
+
             render_add_connection_modal(input, path_input, step, frame, area);
         }
         AppMode::ManageConnections => {
@@ -48,11 +39,11 @@ pub fn render(app: &App, frame: &mut Frame) {
         }
         AppMode::RemoveConnection { selected } => {
             render_remove_connection_modal(app, *selected, frame, area);
-
         }
         _ => {}
     }
 }
+
 
 // ─── Sidebar ────────────────────────────────────────────────────────────────
 
@@ -72,7 +63,6 @@ fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
             Line::from(""),
             Line::from(Span::styled(
                 "  Press 'a' to add a connection:",
-
                 Style::default().fg(Color::Cyan),
             )),
             Line::from(""),
@@ -93,7 +83,6 @@ fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
     let items: Vec<ListItem> = app
         .servers
         .iter()
-
         .enumerate()
         .map(|(i, server)| {
             let (icon_color, icon) = match &server.status {
@@ -130,10 +119,7 @@ fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
 
 fn render_log_panel(app: &App, scroll: usize, frame: &mut Frame, area: Rect) {
     let server = &app.servers[app.selected];
-    let container = server
-        .container_name
-        .as_deref()
-        .unwrap_or("unknown");
+    let container = server.container_name.as_deref().unwrap_or("unknown");
 
     let block = Block::bordered()
         .title(format!(" Logs: {} ", container))
@@ -183,29 +169,27 @@ fn render_log_panel(app: &App, scroll: usize, frame: &mut Frame, area: Rect) {
 
 // ─── Manage Packs Panel ─────────────────────────────────────────────────────
 
-
 fn render_manage_packs(app: &App, selected: usize, frame: &mut Frame, area: Rect) {
-
     let server = &app.servers[app.selected];
-
 
     let block = Block::bordered()
         .title(" Manage Packs ")
-        .title_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        .title_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Yellow));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let chunks =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
-
+    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
 
     let hint = Line::from(vec![
         Span::styled(" ↑↓ ", Style::default().fg(Color::Cyan)),
         Span::raw("navigate  "),
-
         Span::styled("Space/Enter ", Style::default().fg(Color::Cyan)),
         Span::raw("toggle  "),
         Span::styled("Esc ", Style::default().fg(Color::Red)),
@@ -213,17 +197,17 @@ fn render_manage_packs(app: &App, selected: usize, frame: &mut Frame, area: Rect
     ]);
     frame.render_widget(Paragraph::new(hint), chunks[0]);
 
-
     let rp = &server.installed_resource_packs;
     let bp = &server.installed_behavior_packs;
-
 
     let mut items: Vec<ListItem> = Vec::new();
 
     // Resource Packs header
     items.push(ListItem::new(Line::from(Span::styled(
         "  Resource Packs",
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
     ))));
 
     if rp.is_empty() {
@@ -242,9 +226,10 @@ fn render_manage_packs(app: &App, selected: usize, frame: &mut Frame, area: Rect
 
     // Behavior Packs header
     items.push(ListItem::new(Line::from(Span::styled(
-
         "  Behavior Packs",
-        Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD),
     ))));
 
     if bp.is_empty() {
@@ -259,13 +244,12 @@ fn render_manage_packs(app: &App, selected: usize, frame: &mut Frame, area: Rect
     }
 
     // Create a List with highlight style
-    let list = List::new(items)
-        .highlight_style(
-            Style::default()
-                .bg(Color::Blue)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        );
+    let list = List::new(items).highlight_style(
+        Style::default()
+            .bg(Color::Blue)
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    );
 
     // Use ListState to manage selection and scrolling
     let mut state = ListState::default();
@@ -284,20 +268,15 @@ fn pack_manage_item(enabled: bool, name: &str, version: &[u32]) -> ListItem<'sta
     let ver = version
         .iter()
         .map(|v| v.to_string())
-
         .collect::<Vec<_>>()
         .join(".");
     let line = Line::from(vec![
         Span::styled(format!("  {badge} "), Style::default().fg(badge_color)),
         Span::raw(name.to_owned()),
         Span::styled(format!("  v{ver}"), Style::default().fg(Color::DarkGray)),
-
     ]);
     ListItem::new(line)
 }
-
-
-
 
 // ─── Detail Panel ───────────────────────────────────────────────────────────
 
@@ -309,7 +288,6 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
     if let AppMode::ManagePacks { selected } = &app.mode {
         render_manage_packs(app, *selected, frame, area);
         return;
-
     }
 
     let block = Block::bordered()
@@ -343,9 +321,7 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
     // Build UUID → name mappings from installed packs
     let mut rp_name_map: HashMap<&str, &str> = HashMap::new();
     for pack in &server.installed_resource_packs {
-
         rp_name_map.insert(pack.uuid.as_str(), pack.name.as_str());
-
     }
     let mut bp_name_map: HashMap<&str, &str> = HashMap::new();
     for pack in &server.installed_behavior_packs {
@@ -362,8 +338,11 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
     let is_symlink = server.path.is_symlink();
 
     let path_display = if is_symlink {
-        format!("{} → {}", server.path.display(), 
-                fs::read_link(&server.path).unwrap_or_default().display())
+        format!(
+            "{} → {}",
+            server.path.display(),
+            fs::read_link(&server.path).unwrap_or_default().display()
+        )
     } else {
         server.path.display().to_string()
     };
@@ -372,9 +351,7 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
 
     let mut lines = vec![
         Line::from(""),
-
         Line::from(vec![
-
             Span::styled("  Name:     ", label_style),
             Span::styled(
                 server.name.clone(),
@@ -387,14 +364,12 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
             Span::styled("  Type:     ", label_style),
             Span::styled(
                 server.server_type.as_str(),
-
                 Style::default().fg(match server.server_type {
                     ServerType::Bedrock => Color::Blue,
                     ServerType::Java => Color::Red,
                     ServerType::Unknown => Color::DarkGray,
                 }),
             ),
-
         ]),
         Line::from(vec![
             Span::styled("  Port:     ", label_style),
@@ -402,7 +377,6 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
                 server.port.map_or("unknown".to_string(), |p| p.to_string()),
                 Style::default().fg(Color::Cyan),
             ),
-
         ]),
         Line::from(vec![
             Span::styled("  Path:     ", label_style),
@@ -425,7 +399,6 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
     ];
 
     if server.resource_packs.is_empty() {
-
         lines.push(Line::from(Span::styled(
             "    (none)",
             Style::default().fg(Color::DarkGray),
@@ -468,7 +441,6 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
             format!("  Error: {e}"),
             Style::default().fg(Color::Red),
         )));
-
     }
 
     frame.render_widget(
@@ -477,9 +449,7 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
             .wrap(Wrap { trim: false }),
         area,
     );
-
 }
-
 
 // Updated to take a name instead of pack_id
 fn pack_line(name: &str, version: &[u32], bullet_color: Color) -> Line<'static> {
@@ -491,24 +461,15 @@ fn pack_line(name: &str, version: &[u32], bullet_color: Color) -> Line<'static> 
     Line::from(vec![
         Span::styled("    • ", Style::default().fg(bullet_color)),
         Span::styled(name.to_owned(), Style::default().fg(Color::Gray)),
-        Span::styled(
-            format!("  v{ver}"),
-
-            Style::default().fg(Color::DarkGray),
-
-        ),
+        Span::styled(format!("  v{ver}"), Style::default().fg(Color::DarkGray)),
     ])
-
 }
 
 // ─── Status Bar ─────────────────────────────────────────────────────────────
 
 fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
-
     let line = if let Some(msg) = &app.message {
-
         Line::from(vec![
-
             Span::raw(" "),
             Span::styled(msg.as_str().to_owned(), Style::default().fg(Color::Yellow)),
         ])
@@ -531,12 +492,20 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
                 Span::raw("  "),
                 kb(" r ", "refresh"),
             ]),
-            AppMode::Installing { .. } => Line::from(vec![
 
-                kb(" Enter ", "confirm"),
-                Span::raw("  "),
-                kb(" Esc ", "cancel"),
-            ]),
+            AppMode::Installing { step, .. } => {
+                let (prompt, next_hint) = match step {
+                    InstallStep::Path => ("Enter path", "next"),
+                    InstallStep::Name => ("Enter name (optional)", "finish"),
+                };
+                Line::from(vec![
+                    Span::styled(format!(" {} ", prompt), Style::default().fg(Color::Cyan)),
+                    Span::raw("  "),
+                    kb(" Enter ", next_hint),
+                    Span::raw("  "),
+                    kb(" Esc ", "cancel"),
+                ])
+            }
 
             AppMode::AddConnection { step, .. } => {
                 let step_text = match step {
@@ -547,15 +516,12 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
                     Span::styled(format!(" {} ", step_text), Style::default().fg(Color::Cyan)),
                     Span::raw("  "),
                     kb(" Enter ", "next"),
-
                     Span::raw("  "),
                     kb(" Esc ", "cancel"),
                 ])
-
             }
             AppMode::ManageConnections => Line::from(vec![
                 kb(" ↑↓ ", "select"),
-
                 Span::raw("  "),
                 kb(" Enter ", "view"),
                 Span::raw("  "),
@@ -595,17 +561,21 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
 
 fn kb(key: &str, label: &str) -> Span<'static> {
     Span::raw(format!("[{}{}]", key.trim(), label))
-
 }
-
 
 // ─── Install Modal ──────────────────────────────────────────────────────────
 
-fn render_install_modal(input: &str, frame: &mut Frame, area: Rect) {
-    let popup = centered_rect(60, 40, area);
+fn render_install_modal(app: &App, frame: &mut Frame, area: Rect) {
+    let popup = centered_rect(70, 40, area);
     frame.render_widget(Clear, popup);
 
+    let (step, path_input, name_input) = match &app.mode {
+        AppMode::Installing { step, path_input, name_input } => (step, path_input, name_input),
+        _ => return,
+    };
+
     let block = Block::bordered()
+
         .title(" Install Plugin ")
         .title_style(
             Style::default()
@@ -613,33 +583,59 @@ fn render_install_modal(input: &str, frame: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         )
         .border_type(BorderType::Rounded)
+
         .border_style(Style::default().fg(Color::Yellow));
 
-    let content = Text::from(vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  Path: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(input.to_owned(), Style::default().fg(Color::White)),
-            Span::styled(
-                "█",
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::SLOW_BLINK),
-            ),
+    let content = match step {
+
+        InstallStep::Path => Text::from(vec![
+            Line::from(""),
+
+            Line::from(vec![
+                Span::styled("  Path: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(path_input.to_owned(), Style::default().fg(Color::White)),
+                Span::styled(
+                    "█",
+                    Style::default()
+                        .fg(Color::White)
+
+                        .add_modifier(Modifier::SLOW_BLINK),
+                ),
+            ]),
+
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Supports: folder, .zip, .mcaddon",
+
+                Style::default().fg(Color::DarkGray),
+            )),
+
         ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Supports: folder, .zip, .mcaddon",
-            Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  Enter", Style::default().fg(Color::Green)),
-            Span::styled(" confirm   ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc", Style::default().fg(Color::Red)),
-            Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+        InstallStep::Name => Text::from(vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  Path: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(path_input.to_owned(), Style::default().fg(Color::Cyan)),
+            ]),
+            Line::from(vec![
+                Span::styled("  Name: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(name_input.to_owned(), Style::default().fg(Color::White)),
+                Span::styled(
+                    "█",
+                    Style::default()
+
+                        .fg(Color::White)
+                        .add_modifier(Modifier::SLOW_BLINK),
+                ),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Leave empty to use folder name",
+                Style::default().fg(Color::DarkGray),
+            )),
         ]),
-    ]);
+    };
+
 
     frame.render_widget(Paragraph::new(content).block(block), popup);
 }
@@ -661,7 +657,6 @@ fn render_add_connection_modal(
         .title(" Add Server Connection ")
         .title_style(
             Style::default()
-
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         )
@@ -675,22 +670,21 @@ fn render_add_connection_modal(
 
     let content = Text::from(vec![
         Line::from(""),
-
         Line::from(vec![
-
-            Span::styled(format!("  {} ", prompt), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("  {} ", prompt),
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled(current_input.to_owned(), Style::default().fg(Color::White)),
             Span::styled(
                 "█",
                 Style::default()
                     .fg(Color::White)
-
                     .add_modifier(Modifier::SLOW_BLINK),
             ),
         ]),
         Line::from(""),
         Line::from(Span::styled(
-
             "  Examples:",
             Style::default().fg(Color::DarkGray),
         )),
@@ -706,7 +700,6 @@ fn render_add_connection_modal(
         Line::from(vec![
             Span::styled("  Enter", Style::default().fg(Color::Green)),
             Span::styled(" next   ", Style::default().fg(Color::DarkGray)),
-
             Span::styled("Esc", Style::default().fg(Color::Red)),
             Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
         ]),
@@ -722,7 +715,10 @@ fn render_manage_connections_modal(app: &App, frame: &mut Frame, area: Rect) {
     frame.render_widget(Clear, popup);
 
     let block = Block::bordered()
-        .title(format!(" Manage Connections ({}) ", app.connections.connections.len()))
+        .title(format!(
+            " Manage Connections ({}) ",
+            app.connections.connections.len()
+        ))
         .title_style(
             Style::default()
                 .fg(Color::Cyan)
@@ -730,7 +726,6 @@ fn render_manage_connections_modal(app: &App, frame: &mut Frame, area: Rect) {
         )
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Cyan));
-
 
     if app.connections.connections.is_empty() {
         let content = Text::from(vec![
@@ -758,24 +753,24 @@ fn render_manage_connections_modal(app: &App, frame: &mut Frame, area: Rect) {
             let exists = if conn.path.exists() {
                 Span::styled(" ✓", Style::default().fg(Color::Green))
             } else {
-
                 Span::styled(" ✗", Style::default().fg(Color::Red))
-
             };
-            
+
             let symlink = if conn.is_symlink {
                 Span::styled(" (symlink)", Style::default().fg(Color::Yellow))
             } else {
                 Span::styled("", Style::default())
             };
 
-
             let line = Line::from(vec![
-                Span::styled(format!("  {} ", conn.name), Style::default().fg(Color::White)),
+                Span::styled(
+                    format!("  {} ", conn.name),
+                    Style::default().fg(Color::White),
+                ),
                 exists,
                 symlink,
             ]);
-            
+
             let style = if i == app.selected_connection {
                 Style::default()
                     .bg(Color::Blue)
@@ -788,17 +783,16 @@ fn render_manage_connections_modal(app: &App, frame: &mut Frame, area: Rect) {
         })
         .collect();
 
-
     let list = List::new(items).block(Block::default());
     let mut state = ListState::default();
     state.select(Some(app.selected_connection));
-    
+
     // Fix: Remove the & before Margin
     let inner_area = popup.inner(Margin {
         horizontal: 1,
         vertical: 1,
     });
-    
+
     let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(inner_area);
 
     // Instructions
@@ -807,14 +801,12 @@ fn render_manage_connections_modal(app: &App, frame: &mut Frame, area: Rect) {
         Span::raw(" select  "),
         Span::styled("Enter", Style::default().fg(Color::Cyan)),
         Span::raw(" view  "),
-
         Span::styled("d", Style::default().fg(Color::Red)),
-
         Span::raw(" delete  "),
         Span::styled("Esc", Style::default().fg(Color::Red)),
         Span::raw(" back"),
-    ])).alignment(Alignment::Center);
-    
+    ]))
+    .alignment(Alignment::Center);
 
     frame.render_widget(instructions, chunks[0]);
     frame.render_stateful_widget(list, chunks[1], &mut state);
@@ -828,12 +820,7 @@ fn render_remove_connection_modal(app: &App, selected: usize, frame: &mut Frame,
 
     let block = Block::bordered()
         .title(" Confirm Delete ")
-
-        .title_style(
-            Style::default()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD),
-        )
+        .title_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Red));
 
@@ -863,11 +850,9 @@ fn render_remove_connection_modal(app: &App, selected: usize, frame: &mut Frame,
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let pad_v = (100 - percent_y) / 2;
     let pad_h = (100 - percent_x) / 2;
-
 
     let vertical = Layout::vertical([
         Constraint::Percentage(pad_v),

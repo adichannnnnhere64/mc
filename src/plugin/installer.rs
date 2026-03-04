@@ -17,7 +17,9 @@ pub struct InstallResult {
 
 /// Install all packs found in `source_path` into the server at `server_path`.
 /// A single archive may contain both a BP and RP — both are installed.
-pub fn install(source_path: &Path, server_path: &Path) -> color_eyre::Result<Vec<InstallResult>> {
+
+pub fn install(source_path: &Path, server_path: &Path, custom_name: Option<String>) -> color_eyre::Result<Vec<InstallResult>> {
+
     let manifest_dir = if source_path.is_dir() {
         source_path.to_path_buf()
     } else {
@@ -32,7 +34,9 @@ pub fn install(source_path: &Path, server_path: &Path) -> color_eyre::Result<Vec
 
     let manifest_paths = find_all_manifests(&manifest_dir);
     if manifest_paths.is_empty() {
+
         cleanup_tmp(server_path);
+
         return Err(color_eyre::eyre::eyre!("No manifest.json found in archive"));
     }
 
@@ -40,11 +44,16 @@ pub fn install(source_path: &Path, server_path: &Path) -> color_eyre::Result<Vec
     let mut errors = Vec::new();
 
     for manifest_path in &manifest_paths {
-        match install_single(manifest_path, server_path) {
+        // If there's a custom name and it's the only pack, apply it to all manifests? Or first one?
+        // We'll apply custom name to all manifests for simplicity, but user might expect it only for the first.
+        // Better: if multiple manifests, we could ask? But for now, apply to all.
+        let custom = custom_name.clone(); // clone for each
+        match install_single(manifest_path, server_path, custom) {
             Ok(r) => results.push(r),
             Err(e) => errors.push(e.to_string()),
         }
     }
+
 
     cleanup_tmp(server_path);
 
@@ -52,25 +61,43 @@ pub fn install(source_path: &Path, server_path: &Path) -> color_eyre::Result<Vec
         return Err(color_eyre::eyre::eyre!("{}", errors.join("; ")));
     }
 
+
     Ok(results)
+
 }
 
-fn install_single(manifest_path: &Path, server_path: &Path) -> color_eyre::Result<InstallResult> {
+
+fn install_single(manifest_path: &Path, server_path: &Path, custom_name: Option<String>) -> color_eyre::Result<InstallResult> {
     let manifest_content = fs::read_to_string(manifest_path)?;
-    let manifest: Manifest = serde_json::from_str(&manifest_content)
+    let mut manifest: Manifest = serde_json::from_str(&manifest_content)
         .map_err(|e| color_eyre::eyre::eyre!("Failed to parse manifest.json: {e}"))?;
+
+
+    // Apply custom name if provided
+    if let Some(name) = custom_name {
+
+        manifest.header.name = Some(name);
+
+        // Write back the modified manifest
+        let modified_content = serde_json::to_string_pretty(&manifest)?;
+        fs::write(manifest_path, modified_content)?;
+    }
 
     let pack_type = manifest.pack_type();
     let pack_name = manifest
         .header
+
         .name
+
         .clone()
         .unwrap_or_else(|| manifest.header.uuid.clone());
 
     let (target_subdir, json_file) = match &pack_type {
         PackType::Resources => ("resource_packs", "resource_packs.json"),
         PackType::Behavior => ("behavior_packs", "behavior_packs.json"),
+
         PackType::Unknown => {
+
             return Err(color_eyre::eyre::eyre!(
                 "Unknown pack type in {}",
                 manifest_path.display()
@@ -78,7 +105,9 @@ fn install_single(manifest_path: &Path, server_path: &Path) -> color_eyre::Resul
         }
     };
 
+
     let pack_root = manifest_path.parent().expect("manifest has parent dir");
+
     let pack_dest = server_path
         .join(target_subdir)
         .join(&manifest.header.uuid);

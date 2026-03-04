@@ -7,19 +7,39 @@ use ratatui::DefaultTerminal;
 use crate::{
     connection::ConnectionConfig,
     event::{AppEvent, Event, EventHandler},
-    server::{discover_servers, read_docker_logs, ServerInstance},
+    server::{ServerInstance, discover_servers, read_docker_logs},
     ui,
 };
 
 #[derive(Debug, PartialEq)]
+pub enum InstallStep {
+    Path,
+    Name,
+}
+
+#[derive(Debug, PartialEq)]
 pub enum AppMode {
     Normal,
-    Installing { input: String },
-    AddConnection { input: String, path_input: String, step: ConnectionStep },
+    Installing {
+        step: InstallStep,
+        path_input: String,
+        name_input: String,
+    },
+    AddConnection {
+        input: String,
+        path_input: String,
+        step: ConnectionStep,
+    },
     ManageConnections,
-    RemoveConnection { selected: usize },
-    ViewLogs { scroll: usize },
-    ManagePacks { selected: usize },
+    RemoveConnection {
+        selected: usize,
+    },
+    ViewLogs {
+        scroll: usize,
+    },
+    ManagePacks {
+        selected: usize,
+    },
 }
 
 #[derive(Debug, PartialEq)]
@@ -27,7 +47,6 @@ pub enum ConnectionStep {
     Name,
     Path,
 }
-
 
 #[derive(Debug)]
 pub struct App {
@@ -42,7 +61,6 @@ pub struct App {
     pub selected_connection: usize,
     pub log_lines: Vec<String>,
 }
-
 
 impl App {
     pub fn new() -> Self {
@@ -68,9 +86,7 @@ impl App {
                     break;
                 }
             }
-
         });
-
 
         Self {
             running: true,
@@ -96,7 +112,6 @@ impl App {
                     if let crossterm::event::Event::Key(key) = event {
                         if key.kind == crossterm::event::KeyEventKind::Press {
                             self.handle_key(key)?;
-
                         }
                     }
                 }
@@ -105,7 +120,6 @@ impl App {
         }
         Ok(())
     }
-
 
     fn handle_key(&mut self, key: KeyEvent) -> color_eyre::Result<()> {
         match &self.mode {
@@ -120,7 +134,6 @@ impl App {
         Ok(())
     }
 
-
     fn handle_normal_key(&mut self, key: KeyEvent) {
         self.message = None;
         match key.code {
@@ -134,16 +147,19 @@ impl App {
             KeyCode::Char('i') => {
                 if !self.servers.is_empty() {
                     self.mode = AppMode::Installing {
-                        input: String::new(),
+                        step: InstallStep::Path,
+                        path_input: String::new(),
+                        name_input: String::new(),
                     };
                 } else {
                     self.message =
                         Some("No servers found. Add a connection with 'a' first.".into());
                 }
             }
+
             KeyCode::Char('a') => {
-                self.mode = AppMode::AddConnection { 
-                    input: String::new(), 
+                self.mode = AppMode::AddConnection {
+                    input: String::new(),
                     path_input: String::new(),
                     step: ConnectionStep::Name,
                 };
@@ -151,10 +167,8 @@ impl App {
             KeyCode::Char('m') => {
                 self.mode = AppMode::ManageConnections;
                 self.selected_connection = 0;
-
             }
             KeyCode::Char('p') => {
-
                 if !self.servers.is_empty() {
                     self.mode = AppMode::ManagePacks { selected: 0 };
                 }
@@ -165,7 +179,6 @@ impl App {
                 self.message = Some("Server list refreshed.".into());
             }
             KeyCode::Char('l') => {
-
                 if self.servers.is_empty() {
                     return;
                 }
@@ -179,7 +192,6 @@ impl App {
                     None => {
                         self.message = Some("No Docker container linked to this server.".into());
                     }
-
                 }
             }
             _ => {}
@@ -193,30 +205,72 @@ impl App {
                 self.message = None;
             }
             KeyCode::Enter => {
-                let input = match &self.mode {
-                    AppMode::Installing { input } => input.clone(),
+                let (step, path_input, name_input) = match &self.mode {
+                    AppMode::Installing {
+                        step,
+                        path_input,
+                        name_input,
+                    } => (step.clone(), path_input.clone(), name_input.clone()),
                     _ => return,
                 };
-                let path = PathBuf::from(input.trim());
-                self.mode = AppMode::Normal;
-                if path.exists() {
-                    self.events.send(AppEvent::InstallPlugin(path));
+                match step {
+                    InstallStep::Path => {
+                        if path_input.trim().is_empty() {
+                            self.message = Some("Path cannot be empty".into());
+                            return;
+                        }
+                        self.mode = AppMode::Installing {
+                            step: InstallStep::Name,
+                            path_input,
+                            name_input: String::new(),
+                        };
+                    }
+                    InstallStep::Name => {
+                        let path = PathBuf::from(path_input.trim());
+                        if !path.exists() {
+                            self.message = Some(format!("Path not found: {}", path_input.trim()));
 
-                    self.message = Some("Installing…".into());
-                } else {
-                    self.message = Some(format!("Path not found: {}", input.trim()));
+                            self.mode = AppMode::Normal;
+                            return;
+                        }
+                        let custom_name = if name_input.trim().is_empty() {
+                            None
+                        } else {
+                            Some(name_input.trim().to_string())
+                        };
+                        self.events.send(AppEvent::InstallPlugin(path, custom_name));
+                        self.message = Some("Installing…".into());
+                        self.mode = AppMode::Normal;
+                    }
                 }
             }
-            KeyCode::Backspace => {
-                if let AppMode::Installing { input } = &mut self.mode {
-                    input.pop();
-                }
-            }
-            KeyCode::Char(c) => {
-                if let AppMode::Installing { input } = &mut self.mode {
-                    input.push(c);
-                }
-            }
+            KeyCode::Backspace => match &mut self.mode {
+                AppMode::Installing {
+                    step,
+                    path_input,
+                    name_input,
+                } => match step {
+                    InstallStep::Path => {
+                        path_input.pop();
+                    }
+                    InstallStep::Name => {
+                        name_input.pop();
+                    }
+                },
+                _ => {}
+            },
+            KeyCode::Char(c) => match &mut self.mode {
+                AppMode::Installing {
+                    step,
+                    path_input,
+                    name_input,
+                } => match step {
+                    InstallStep::Path => path_input.push(c),
+                    InstallStep::Name => name_input.push(c),
+                },
+                _ => {}
+            },
+
             _ => {}
         }
     }
@@ -229,9 +283,11 @@ impl App {
             }
             KeyCode::Enter => {
                 let (name, path_str, step) = match &self.mode {
-                    AppMode::AddConnection { input, path_input, step } => {
-                        (input.clone(), path_input.clone(), step)
-                    }
+                    AppMode::AddConnection {
+                        input,
+                        path_input,
+                        step,
+                    } => (input.clone(), path_input.clone(), step),
                     _ => return,
                 };
                 match step {
@@ -263,38 +319,39 @@ impl App {
                     }
                 }
             }
-            KeyCode::Backspace => {
-                match &mut self.mode {
-                    AppMode::AddConnection { input, path_input, step } => {
-                        match step {
-                            ConnectionStep::Name => { input.pop(); }
-                            ConnectionStep::Path => { path_input.pop(); }
-                        }
-
+            KeyCode::Backspace => match &mut self.mode {
+                AppMode::AddConnection {
+                    input,
+                    path_input,
+                    step,
+                } => match step {
+                    ConnectionStep::Name => {
+                        input.pop();
                     }
-                    _ => {}
-                }
-            }
-            KeyCode::Char(c) => {
-                match &mut self.mode {
-                    AppMode::AddConnection { input, path_input, step } => {
-                        match step {
-                            ConnectionStep::Name => input.push(c),
-                            ConnectionStep::Path => path_input.push(c),
-                        }
+                    ConnectionStep::Path => {
+                        path_input.pop();
                     }
+                },
+                _ => {}
+            },
+            KeyCode::Char(c) => match &mut self.mode {
+                AppMode::AddConnection {
+                    input,
+                    path_input,
+                    step,
+                } => match step {
+                    ConnectionStep::Name => input.push(c),
+                    ConnectionStep::Path => path_input.push(c),
+                },
 
-                    _ => {}
-                }
-            }
+                _ => {}
+            },
 
             _ => {}
         }
     }
 
-
     fn handle_manage_connections_key(&mut self, key: KeyEvent) {
-
         match key.code {
             KeyCode::Esc => {
                 self.mode = AppMode::Normal;
@@ -307,7 +364,6 @@ impl App {
             }
             KeyCode::Down => {
                 if self.selected_connection + 1 < self.connections.connections.len() {
-
                     self.selected_connection += 1;
                 }
             }
@@ -323,8 +379,8 @@ impl App {
                     let conn = &self.connections.connections[self.selected_connection];
 
                     self.message = Some(format!(
-                        "Connection: {} → {} {}", 
-                        conn.name, 
+                        "Connection: {} → {} {}",
+                        conn.name,
                         conn.path.display(),
                         if conn.is_symlink { "(symlink)" } else { "" }
                     ));
@@ -345,7 +401,6 @@ impl App {
                     if let Err(e) = self.connections.remove_connection(selected) {
                         self.message = Some(format!("Error removing connection: {}", e));
                     } else {
-
                         self.message = Some(format!("Removed connection: {}", name));
                         self.refresh_servers();
                     }
@@ -360,10 +415,8 @@ impl App {
         }
     }
 
-
     fn handle_view_logs_key(&mut self, key: KeyEvent) {
         match key.code {
-
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.mode = AppMode::Normal;
             }
@@ -385,14 +438,12 @@ impl App {
             }
             KeyCode::PageUp => {
                 if let AppMode::ViewLogs { scroll } = &mut self.mode {
-
                     *scroll = scroll.saturating_sub(20);
                 }
             }
             _ => {}
         }
     }
-
 
     // --- Manage Packs Methods ---
 
@@ -404,7 +455,6 @@ impl App {
         let server = &self.servers[self.selected];
         let rp_len = server.installed_resource_packs.len();
         let bp_len = server.installed_behavior_packs.len();
-
 
         // Structure:
         // 1. Resource Packs header
@@ -439,7 +489,6 @@ impl App {
             }
             KeyCode::Enter | KeyCode::Char(' ') => {
                 let idx = if let AppMode::ManagePacks { selected } = &self.mode {
-
                     *selected
                 } else {
                     return;
@@ -458,7 +507,6 @@ impl App {
         let rp_len = server.installed_resource_packs.len();
         let bp_len = server.installed_behavior_packs.len();
 
-
         // Map visual index to pack by simulating the list structure
         let mut current = 0;
 
@@ -471,7 +519,6 @@ impl App {
                 return; // "(none installed)" line – do nothing
             }
             current += 1;
-
         } else {
             for i in 0..rp_len {
                 if visual_idx == current {
@@ -500,13 +547,11 @@ impl App {
         if bp_len == 0 {
             if visual_idx == current {
                 return; // "(none installed)" line
-
             }
             // current += 1; // not needed
         } else {
             for i in 0..bp_len {
                 if visual_idx == current {
-
                     self.toggle_pack_by_index(false, i);
 
                     return;
@@ -525,12 +570,10 @@ impl App {
             (
                 server.path.join("resource_packs.json"),
                 pack.uuid.clone(),
-
                 pack.version.clone(),
                 pack.enabled,
             )
         } else {
-
             let pack = &server.installed_behavior_packs[idx];
             (
                 server.path.join("behavior_packs.json"),
@@ -542,7 +585,6 @@ impl App {
 
         match crate::plugin::installer::set_pack_enabled(
             &json_path,
-
             &uuid,
             &version,
             !currently_enabled,
@@ -550,7 +592,6 @@ impl App {
             Ok(()) => {
                 self.message = Some(if currently_enabled {
                     format!("Disabled '{uuid}'")
-
                 } else {
                     format!("Enabled '{uuid}'")
                 });
@@ -558,7 +599,6 @@ impl App {
 
             Err(e) => {
                 self.message = Some(format!("Toggle error: {e}"));
-
             }
         }
 
@@ -566,7 +606,6 @@ impl App {
     }
 
     // --- End Manage Packs Methods ---
-
 
     fn handle_app_event(&mut self, event: AppEvent) {
         match event {
@@ -578,12 +617,10 @@ impl App {
             }
             AppEvent::SelectPrev => {
                 self.selected = self.selected.saturating_sub(1);
-
             }
-            AppEvent::InstallPlugin(path) => self.run_install(path),
+            AppEvent::InstallPlugin(path, custom_name) => self.run_install(path, custom_name),
             AppEvent::InstallDone(result) => match result {
                 Ok(msg) => {
-
                     self.message = Some(msg);
                     self.refresh_servers();
                 }
@@ -597,7 +634,6 @@ impl App {
                 if let AppMode::ViewLogs { scroll } = &mut self.mode {
                     *scroll = self.log_lines.len().saturating_sub(1);
                 }
-
             }
             AppEvent::UpdateStatuses => self.update_statuses(),
         }
@@ -618,22 +654,19 @@ impl App {
         let sender = self.events.sender();
 
         tokio::spawn(async move {
-
             let lines = tokio::task::spawn_blocking(move || read_docker_logs(&container, 300))
                 .await
-
                 .unwrap_or_default();
             let _ = sender.send(Event::App(AppEvent::LogsLoaded(lines)));
         });
     }
 
-    fn run_install(&self, path: PathBuf) {
+    fn run_install(&self, path: PathBuf, custom_name: Option<String>) {
         let server_path = self.servers[self.selected].path.clone();
         let sender = self.events.sender();
         tokio::spawn(async move {
             let result = tokio::task::spawn_blocking(move || {
-                crate::plugin::installer::install(&path, &server_path)
-
+                crate::plugin::installer::install(&path, &server_path, custom_name)
                     .map(|results| {
                         let names = results
                             .iter()
@@ -648,14 +681,16 @@ impl App {
             let msg = match result {
                 Ok(r) => r,
                 Err(e) => Err(e.to_string()),
-
             };
             let _ = sender.send(Event::App(AppEvent::InstallDone(msg)));
         });
     }
 }
 
-fn discover_servers_with_connections(connections: &ConnectionConfig, legacy_path: &Path) -> Vec<ServerInstance> {
+fn discover_servers_with_connections(
+    connections: &ConnectionConfig,
+    legacy_path: &Path,
+) -> Vec<ServerInstance> {
     let mut servers = Vec::new();
 
     for conn in &connections.connections {
