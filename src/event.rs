@@ -21,10 +21,13 @@ pub enum AppEvent {
     InstallPlugin(PathBuf),
     InstallDone(Result<String, String>),
     LogsLoaded(Vec<String>),
+    // NEW: Periodic status update trigger
+    UpdateStatuses,
 }
 
 #[derive(Debug)]
 pub struct EventHandler {
+
     sender: mpsc::UnboundedSender<Event>,
     receiver: mpsc::UnboundedReceiver<Event>,
 }
@@ -38,8 +41,11 @@ impl EventHandler {
     }
 
     pub async fn next(&mut self) -> color_eyre::Result<Event> {
+
         self.receiver
+
             .recv()
+
             .await
             .ok_or_eyre("Event channel closed unexpectedly")
     }
@@ -47,6 +53,7 @@ impl EventHandler {
     pub fn send(&self, app_event: AppEvent) {
         let _ = self.sender.send(Event::App(app_event));
     }
+
 
     pub fn sender(&self) -> mpsc::UnboundedSender<Event> {
         self.sender.clone()
@@ -63,16 +70,20 @@ impl EventTask {
     }
 
     async fn run(self) -> color_eyre::Result<()> {
+
         let tick_rate = Duration::from_secs_f64(1.0 / TICK_FPS);
         let mut reader = crossterm::event::EventStream::new();
         let mut tick = tokio::time::interval(tick_rate);
+
         loop {
             let tick_delay = tick.tick();
             let crossterm_event = reader.next().fuse();
+
             tokio::select! {
                 _ = self.sender.closed() => break,
                 _ = tick_delay => self.send(Event::Tick),
                 Some(Ok(evt)) = crossterm_event => self.send(Event::Crossterm(evt)),
+
             }
         }
         Ok(())

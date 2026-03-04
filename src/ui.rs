@@ -1,4 +1,6 @@
 use std::fs;  // Add this import
+use std::collections::HashMap; // Add at top
+
 //
 
 use ratatui::{
@@ -181,8 +183,11 @@ fn render_log_panel(app: &App, scroll: usize, frame: &mut Frame, area: Rect) {
 
 // ─── Manage Packs Panel ─────────────────────────────────────────────────────
 
+
 fn render_manage_packs(app: &App, selected: usize, frame: &mut Frame, area: Rect) {
+
     let server = &app.servers[app.selected];
+
 
     let block = Block::bordered()
         .title(" Manage Packs ")
@@ -196,9 +201,11 @@ fn render_manage_packs(app: &App, selected: usize, frame: &mut Frame, area: Rect
     let chunks =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
 
+
     let hint = Line::from(vec![
         Span::styled(" ↑↓ ", Style::default().fg(Color::Cyan)),
         Span::raw("navigate  "),
+
         Span::styled("Space/Enter ", Style::default().fg(Color::Cyan)),
         Span::raw("toggle  "),
         Span::styled("Esc ", Style::default().fg(Color::Red)),
@@ -206,55 +213,69 @@ fn render_manage_packs(app: &App, selected: usize, frame: &mut Frame, area: Rect
     ]);
     frame.render_widget(Paragraph::new(hint), chunks[0]);
 
+
     let rp = &server.installed_resource_packs;
     let bp = &server.installed_behavior_packs;
 
+
     let mut items: Vec<ListItem> = Vec::new();
 
-    // ── Resource Packs ──
+    // Resource Packs header
     items.push(ListItem::new(Line::from(Span::styled(
         "  Resource Packs",
         Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
     ))));
+
     if rp.is_empty() {
         items.push(ListItem::new(Line::from(Span::styled(
             "    (none installed)",
             Style::default().fg(Color::DarkGray),
         ))));
     } else {
-        for (i, pack) in rp.iter().enumerate() {
-            items.push(pack_manage_item(pack.enabled, &pack.name, &pack.version, i == selected));
+        for pack in rp.iter() {
+            items.push(pack_manage_item(pack.enabled, &pack.name, &pack.version));
         }
     }
 
+    // Empty separator line
     items.push(ListItem::new(Line::from("")));
 
-    // ── Behavior Packs ──
+    // Behavior Packs header
     items.push(ListItem::new(Line::from(Span::styled(
+
         "  Behavior Packs",
         Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
     ))));
+
     if bp.is_empty() {
         items.push(ListItem::new(Line::from(Span::styled(
             "    (none installed)",
             Style::default().fg(Color::DarkGray),
         ))));
     } else {
-        let rp_len = rp.len();
-        for (i, pack) in bp.iter().enumerate() {
-            items.push(pack_manage_item(
-                pack.enabled,
-                &pack.name,
-                &pack.version,
-                rp_len + i == selected,
-            ));
+        for pack in bp.iter() {
+            items.push(pack_manage_item(pack.enabled, &pack.name, &pack.version));
         }
     }
 
-    frame.render_widget(List::new(items), chunks[1]);
+    // Create a List with highlight style
+    let list = List::new(items)
+        .highlight_style(
+            Style::default()
+                .bg(Color::Blue)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    // Use ListState to manage selection and scrolling
+    let mut state = ListState::default();
+    state.select(Some(selected));
+
+    frame.render_stateful_widget(list, chunks[1], &mut state);
 }
 
-fn pack_manage_item(enabled: bool, name: &str, version: &[u32], highlighted: bool) -> ListItem<'static> {
+// Simplified pack item – highlighting is now handled by the list
+fn pack_manage_item(enabled: bool, name: &str, version: &[u32]) -> ListItem<'static> {
     let (badge, badge_color) = if enabled {
         ("[✓]", Color::Green)
     } else {
@@ -263,23 +284,20 @@ fn pack_manage_item(enabled: bool, name: &str, version: &[u32], highlighted: boo
     let ver = version
         .iter()
         .map(|v| v.to_string())
+
         .collect::<Vec<_>>()
         .join(".");
     let line = Line::from(vec![
         Span::styled(format!("  {badge} "), Style::default().fg(badge_color)),
         Span::raw(name.to_owned()),
         Span::styled(format!("  v{ver}"), Style::default().fg(Color::DarkGray)),
+
     ]);
-    let style = if highlighted {
-        Style::default()
-            .bg(Color::Blue)
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-    ListItem::new(line).style(style)
+    ListItem::new(line)
 }
+
+
+
 
 // ─── Detail Panel ───────────────────────────────────────────────────────────
 
@@ -291,11 +309,11 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
     if let AppMode::ManagePacks { selected } = &app.mode {
         render_manage_packs(app, *selected, frame, area);
         return;
+
     }
 
     let block = Block::bordered()
         .title(" Server Details ")
-
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray));
 
@@ -316,10 +334,23 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
             Paragraph::new(text).block(block).wrap(Wrap { trim: false }),
             area,
         );
+
         return;
     }
 
     let server = &app.servers[app.selected];
+
+    // Build UUID → name mappings from installed packs
+    let mut rp_name_map: HashMap<&str, &str> = HashMap::new();
+    for pack in &server.installed_resource_packs {
+
+        rp_name_map.insert(pack.uuid.as_str(), pack.name.as_str());
+
+    }
+    let mut bp_name_map: HashMap<&str, &str> = HashMap::new();
+    for pack in &server.installed_behavior_packs {
+        bp_name_map.insert(pack.uuid.as_str(), pack.name.as_str());
+    }
 
     let (status_color, status_label) = match &server.status {
         ServerStatus::Running => (Color::Green, "RUNNING"),
@@ -328,41 +359,42 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
         ServerStatus::Error(_) => (Color::Red, "ERROR"),
     };
 
-    // Detect if path is a symlink
     let is_symlink = server.path.is_symlink();
+
     let path_display = if is_symlink {
         format!("{} → {}", server.path.display(), 
                 fs::read_link(&server.path).unwrap_or_default().display())
     } else {
         server.path.display().to_string()
-
     };
 
     let label_style = Style::default().fg(Color::DarkGray);
 
     let mut lines = vec![
         Line::from(""),
+
         Line::from(vec![
+
             Span::styled("  Name:     ", label_style),
             Span::styled(
                 server.name.clone(),
                 Style::default()
                     .fg(Color::White)
-
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
-
         Line::from(vec![
             Span::styled("  Type:     ", label_style),
             Span::styled(
                 server.server_type.as_str(),
+
                 Style::default().fg(match server.server_type {
                     ServerType::Bedrock => Color::Blue,
                     ServerType::Java => Color::Red,
                     ServerType::Unknown => Color::DarkGray,
                 }),
             ),
+
         ]),
         Line::from(vec![
             Span::styled("  Port:     ", label_style),
@@ -370,19 +402,17 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
                 server.port.map_or("unknown".to_string(), |p| p.to_string()),
                 Style::default().fg(Color::Cyan),
             ),
+
         ]),
         Line::from(vec![
             Span::styled("  Path:     ", label_style),
-
             Span::styled(path_display, Style::default().fg(Color::Cyan)),
         ]),
         Line::from(vec![
             Span::styled("  Status:   ", label_style),
             Span::styled(
                 status_label,
-
                 Style::default()
-
                     .fg(status_color)
                     .add_modifier(Modifier::BOLD),
             ),
@@ -395,24 +425,27 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
     ];
 
     if server.resource_packs.is_empty() {
+
         lines.push(Line::from(Span::styled(
             "    (none)",
             Style::default().fg(Color::DarkGray),
         )));
     } else {
-
         for pack in &server.resource_packs {
-            lines.push(pack_line(pack.pack_id.clone(), &pack.version, Color::Yellow));
-
+            let name = rp_name_map
+                .get(pack.pack_id.as_str())
+                .copied()
+                .unwrap_or(pack.pack_id.as_str());
+            lines.push(pack_line(name, &pack.version, Color::Yellow));
         }
     }
 
     lines.push(Line::from(""));
+
     lines.push(Line::from(Span::styled(
         format!("  Behavior Packs ({}):", server.behavior_packs.len()),
         Style::default().fg(Color::Magenta),
     )));
-
 
     if server.behavior_packs.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -421,20 +454,21 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
         )));
     } else {
         for pack in &server.behavior_packs {
-
-            lines.push(pack_line(pack.pack_id.clone(), &pack.version, Color::Magenta));
+            let name = bp_name_map
+                .get(pack.pack_id.as_str())
+                .copied()
+                .unwrap_or(pack.pack_id.as_str());
+            lines.push(pack_line(name, &pack.version, Color::Magenta));
         }
     }
 
-
     if let ServerStatus::Error(e) = &server.status {
-
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             format!("  Error: {e}"),
             Style::default().fg(Color::Red),
-
         )));
+
     }
 
     frame.render_widget(
@@ -442,11 +476,13 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
             .block(block)
             .wrap(Wrap { trim: false }),
         area,
-
     );
+
 }
 
-fn pack_line(pack_id: String, version: &[u32], bullet_color: Color) -> Line<'static> {
+
+// Updated to take a name instead of pack_id
+fn pack_line(name: &str, version: &[u32], bullet_color: Color) -> Line<'static> {
     let ver = version
         .iter()
         .map(|v| v.to_string())
@@ -454,12 +490,15 @@ fn pack_line(pack_id: String, version: &[u32], bullet_color: Color) -> Line<'sta
         .join(".");
     Line::from(vec![
         Span::styled("    • ", Style::default().fg(bullet_color)),
-        Span::styled(pack_id, Style::default().fg(Color::Gray)),
+        Span::styled(name.to_owned(), Style::default().fg(Color::Gray)),
         Span::styled(
             format!("  v{ver}"),
+
             Style::default().fg(Color::DarkGray),
+
         ),
     ])
+
 }
 
 // ─── Status Bar ─────────────────────────────────────────────────────────────
