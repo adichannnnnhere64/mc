@@ -5,6 +5,7 @@ description = "minecraft server management and plugin management tool"
 authors = ["Adrian <aradores@repay.ph>"]
 license = "MIT"
 edition = "2024"
+rust-version = "1.88"
 
 [dependencies]
 crossterm = { version = "0.28.1", features = ["event-stream"] }

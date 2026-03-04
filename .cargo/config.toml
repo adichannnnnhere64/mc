@@ -1,0 +1,2 @@
+[build]
+rustc = "/home/adrian/.rustup/toolchains/1.88.0-x86_64-unknown-linux-gnu/bin/rustc"
