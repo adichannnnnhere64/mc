@@ -111,6 +111,23 @@ fn install_single(
     let json_path = server_path.join(json_file);
     update_pack_list(&json_path, &manifest.header.uuid, &manifest.header.version)?;
 
+    // Also update the world-level pack list so players actually receive the pack.
+    // Bedrock reads world_resource_packs.json / world_behavior_packs.json from the
+    // active world directory; the server-root JSONs only track what's installed.
+    let world_json_file = match &pack_type {
+        PackType::Resources => "world_resource_packs.json",
+        PackType::Behavior => "world_behavior_packs.json",
+        PackType::Unknown => unreachable!(),
+    };
+    if let Some(world_name) = read_level_name(server_path) {
+        let world_json = server_path
+            .join("worlds")
+            .join(&world_name)
+            .join(world_json_file);
+        // Best-effort: don't fail the whole install if the world dir doesn't exist yet
+        let _ = update_pack_list(&world_json, &manifest.header.uuid, &manifest.header.version);
+    }
+
     Ok(InstallResult {
         pack_name,
         pack_type,
@@ -223,4 +240,19 @@ fn cleanup_tmp(server_path: &Path) {
     if tmp.exists() {
         let _ = fs::remove_dir_all(&tmp);
     }
+}
+
+/// Read `level-name` from `server.properties` (defaults to `"Bedrock level"`).
+fn read_level_name(server_path: &Path) -> Option<String> {
+    let content = fs::read_to_string(server_path.join("server.properties")).ok()?;
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("level-name=") {
+            let name = rest.trim().to_string();
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+    }
+    // Bedrock default world name
+    Some("Bedrock level".to_string())
 }
