@@ -186,32 +186,59 @@ fn render_log_panel(app: &App, scroll: usize, frame: &mut Frame, area: Rect) {
 
 // ─── Manage Packs Panel ─────────────────────────────────────────────────────
 
-fn render_manage_packs(app: &App, selected: usize, frame: &mut Frame, area: Rect) {
+fn render_manage_packs(app: &App, selected: usize, moving: bool, frame: &mut Frame, area: Rect) {
     let server = &app.servers[app.selected];
 
     let block = Block::bordered()
-        .title(" Manage Packs ")
+        .title(if moving {
+            " Manage Packs [MOVE MODE] "
+        } else {
+            " Manage Packs "
+        })
         .title_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            if moving {
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            },
         )
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Yellow));
+        .border_style(Style::default().fg(if moving {
+            Color::Green
+        } else {
+            Color::Yellow
+        }));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
 
-    let hint = Line::from(vec![
-        Span::styled(" ↑↓ ", Style::default().fg(Color::Cyan)),
-        Span::raw("navigate  "),
-        Span::styled("Space/Enter ", Style::default().fg(Color::Cyan)),
-        Span::raw("toggle  "),
-        Span::styled("Esc ", Style::default().fg(Color::Red)),
-        Span::raw("back"),
-    ]);
+    let hint = if moving {
+        Line::from(vec![
+            Span::styled(" ↑↓ ", Style::default().fg(Color::Green)),
+            Span::raw("move pack  "),
+            Span::styled("Enter/m ", Style::default().fg(Color::Cyan)),
+            Span::raw("drop  "),
+            Span::styled("Esc ", Style::default().fg(Color::Red)),
+            Span::raw("cancel move"),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(" ↑↓ ", Style::default().fg(Color::Cyan)),
+            Span::raw("navigate  "),
+            Span::styled("m ", Style::default().fg(Color::Cyan)),
+            Span::raw("pick/move  "),
+            Span::styled("Space/Enter ", Style::default().fg(Color::Cyan)),
+            Span::raw("toggle  "),
+            Span::styled("Esc ", Style::default().fg(Color::Red)),
+            Span::raw("back"),
+        ])
+    };
     frame.render_widget(Paragraph::new(hint), chunks[0]);
 
     let rp = &server.installed_resource_packs;
@@ -261,12 +288,17 @@ fn render_manage_packs(app: &App, selected: usize, frame: &mut Frame, area: Rect
     }
 
     // Create a List with highlight style
-    let list = List::new(items).highlight_style(
+    let list = List::new(items).highlight_style(if moving {
+        Style::default()
+            .bg(Color::Green)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD)
+    } else {
         Style::default()
             .bg(Color::Blue)
             .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
-    );
+            .add_modifier(Modifier::BOLD)
+    });
 
     // Use ListState to manage selection and scrolling
     let mut state = ListState::default();
@@ -302,8 +334,8 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
         render_log_panel(app, *scroll, frame, area);
         return;
     }
-    if let AppMode::ManagePacks { selected } = &app.mode {
-        render_manage_packs(app, *selected, frame, area);
+    if let AppMode::ManagePacks { selected, moving } = &app.mode {
+        render_manage_packs(app, *selected, *moving, frame, area);
         return;
     }
     if let AppMode::EditConfig {
@@ -620,13 +652,27 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
                 Span::raw("  "),
                 kb(" Esc ", "back"),
             ]),
-            AppMode::ManagePacks { .. } => Line::from(vec![
-                kb(" ↑↓ ", "navigate"),
-                Span::raw("  "),
-                kb(" Space/Enter ", "toggle"),
-                Span::raw("  "),
-                kb(" Esc ", "back"),
-            ]),
+            AppMode::ManagePacks { moving, .. } => {
+                if *moving {
+                    Line::from(vec![
+                        kb(" ↑↓ ", "move"),
+                        Span::raw("  "),
+                        kb(" Enter/m ", "drop"),
+                        Span::raw("  "),
+                        kb(" Esc ", "cancel"),
+                    ])
+                } else {
+                    Line::from(vec![
+                        kb(" ↑↓ ", "navigate"),
+                        Span::raw("  "),
+                        kb(" m ", "pick/move"),
+                        Span::raw("  "),
+                        kb(" Space/Enter ", "toggle"),
+                        Span::raw("  "),
+                        kb(" Esc ", "back"),
+                    ])
+                }
+            }
             AppMode::SendCommand { .. } => Line::from(vec![
                 kb(" Enter ", "send"),
                 Span::raw("  "),

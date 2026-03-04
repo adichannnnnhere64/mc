@@ -43,6 +43,7 @@ pub enum AppMode {
     },
     ManagePacks {
         selected: usize,
+        moving: bool,
     },
     /// Modal to type and send a command to the selected server.
     SendCommand {
@@ -198,7 +199,10 @@ impl App {
             }
             KeyCode::Char('p') => {
                 if !self.servers.is_empty() {
-                    self.mode = AppMode::ManagePacks { selected: 0 };
+                    self.mode = AppMode::ManagePacks {
+                        selected: 0,
+                        moving: false,
+                    };
                 }
             }
             KeyCode::Char('r') => {
@@ -541,30 +545,104 @@ impl App {
 
     fn handle_manage_packs_key(&mut self, key: KeyEvent) {
         let total = self.manage_packs_total_visual();
+        let (selected, moving) = if let AppMode::ManagePacks { selected, moving } = &self.mode {
+            (*selected, *moving)
+        } else {
+            return;
+        };
 
         match key.code {
             KeyCode::Esc => {
-                self.mode = AppMode::Normal;
+                if moving {
+                    self.mode = AppMode::ManagePacks {
+                        selected,
+                        moving: false,
+                    };
+                } else {
+                    self.mode = AppMode::Normal;
+                }
             }
             KeyCode::Up => {
-                if let AppMode::ManagePacks { selected } = &mut self.mode {
+                if moving {
+                    if self.reorder_pack_by_selected(
+                        selected,
+                        crate::plugin::installer::ReorderDirection::Up,
+                    ) {
+                        self.mode = AppMode::ManagePacks {
+                            selected: selected.saturating_sub(1),
+                            moving: true,
+                        };
+                    }
+                } else if let AppMode::ManagePacks { selected, .. } = &mut self.mode {
                     *selected = selected.saturating_sub(1);
                 }
             }
             KeyCode::Down => {
-                if let AppMode::ManagePacks { selected } = &mut self.mode {
+                if moving {
+                    if self.reorder_pack_by_selected(
+                        selected,
+                        crate::plugin::installer::ReorderDirection::Down,
+                    ) {
+                        self.mode = AppMode::ManagePacks {
+                            selected: (selected + 1).min(total.saturating_sub(1)),
+                            moving: true,
+                        };
+                    }
+                } else if let AppMode::ManagePacks { selected, .. } = &mut self.mode {
                     if *selected + 1 < total {
                         *selected += 1;
                     }
                 }
             }
             KeyCode::Enter | KeyCode::Char(' ') => {
-                let idx = if let AppMode::ManagePacks { selected } = &self.mode {
-                    *selected
+                if moving {
+                    self.mode = AppMode::ManagePacks {
+                        selected,
+                        moving: false,
+                    };
                 } else {
+                    self.toggle_pack(selected);
+                }
+            }
+            KeyCode::Char('m') => {
+                if moving {
+                    self.mode = AppMode::ManagePacks {
+                        selected,
+                        moving: false,
+                    };
+                    return;
+                }
+                let Some((is_resource, idx)) = self.manage_pack_target(selected) else {
+                    self.message = Some("Select a pack row first.".into());
                     return;
                 };
-                self.toggle_pack(idx);
+                let server = &self.servers[self.selected];
+                let pack = if is_resource {
+                    &server.installed_resource_packs[idx]
+                } else {
+                    &server.installed_behavior_packs[idx]
+                };
+                if !pack.enabled {
+                    self.message = Some("Enable the pack first to move it.".into());
+                    return;
+                }
+                self.mode = AppMode::ManagePacks {
+                    selected,
+                    moving: true,
+                };
+                self.message = Some(format!("Move mode: '{}'", pack.name));
+            }
+            KeyCode::Char('K') => {
+                self.reorder_pack_by_selected(
+                    selected,
+                    crate::plugin::installer::ReorderDirection::Up,
+                );
+            }
+            KeyCode::Char('J') => {
+                self.reorder_pack_by_selected(
+                    selected,
+                    crate::plugin::installer::ReorderDirection::Down,
+                );
             }
             _ => {}
         }
@@ -707,65 +785,135 @@ impl App {
     }
 
     fn toggle_pack(&mut self, selected: usize) {
-        if self.servers.is_empty() {
+        if let Some((is_resource, idx)) = self.manage_pack_target(selected) {
+            self.toggle_pack_by_index(is_resource, idx);
+        }
+    }
+
+    fn reorder_pack_by_selected(
+        &mut self,
+        selected: usize,
+        direction: crate::plugin::installer::ReorderDirection,
+    ) -> bool {
+        let Some((is_resource, idx)) = self.manage_pack_target(selected) else {
+            return false;
+        };
+
+        let (uuid, name, enabled) = {
+            let server = &self.servers[self.selected];
+            let pack = if is_resource {
+                &server.installed_resource_packs[idx]
+            } else {
+                &server.installed_behavior_packs[idx]
+            };
+            (pack.uuid.clone(), pack.name.clone(), pack.enabled)
+        };
+
+        if !enabled {
+            self.message = Some("Pack is disabled. Enable it first to reorder.".into());
+            return false;
+        }
+
+        let server_path = self.servers[self.selected].path.clone();
+        match crate::plugin::installer::reorder_pack(&server_path, &uuid, is_resource, direction) {
+            Ok(true) => {
+                let dir = match direction {
+                    crate::plugin::installer::ReorderDirection::Up => "up",
+                    crate::plugin::installer::ReorderDirection::Down => "down",
+                };
+                self.message = Some(format!("Moved '{name}' {dir}"));
+                self.apply_local_pack_reorder(is_resource, idx, direction);
+                true
+            }
+            Ok(false) => {
+                self.message = Some("Cannot move further in that direction.".into());
+                false
+            }
+            Err(e) => {
+                self.message = Some(format!("Reorder error: {e}"));
+                false
+            }
+        }
+    }
+
+    fn apply_local_pack_reorder(
+        &mut self,
+        is_resource: bool,
+        idx: usize,
+        direction: crate::plugin::installer::ReorderDirection,
+    ) {
+        let packs = if is_resource {
+            &mut self.servers[self.selected].installed_resource_packs
+        } else {
+            &mut self.servers[self.selected].installed_behavior_packs
+        };
+
+        let target = match direction {
+            crate::plugin::installer::ReorderDirection::Up if idx > 0 => Some(idx - 1),
+            crate::plugin::installer::ReorderDirection::Down if idx + 1 < packs.len() => {
+                Some(idx + 1)
+            }
+            _ => None,
+        };
+
+        let Some(target_idx) = target else {
             return;
+        };
+
+        if !packs[idx].enabled || !packs[target_idx].enabled {
+            return;
+        }
+        packs.swap(idx, target_idx);
+    }
+
+    fn manage_pack_target(&self, selected: usize) -> Option<(bool, usize)> {
+        if self.servers.is_empty() {
+            return None;
         }
         let server = &self.servers[self.selected];
         let rp_len = server.installed_resource_packs.len();
         let bp_len = server.installed_behavior_packs.len();
 
-        // Map visual index to pack by simulating the list structure
         let mut current = 0;
+        current += 1; // resource header
 
-        // Resource header
-        current += 1;
-
-        // Resource packs
         if rp_len == 0 {
             if selected == current {
-                return; // "(none installed)" line – do nothing
+                return None;
             }
             current += 1;
         } else {
             for i in 0..rp_len {
                 if selected == current {
-                    self.toggle_pack_by_index(true, i);
-
-                    return;
+                    return Some((true, i));
                 }
                 current += 1;
             }
         }
 
-        // Empty line separator
-
         if selected == current {
-            return;
+            return None; // separator
         }
         current += 1;
 
-        // Behavior header
         if selected == current {
-            return;
+            return None; // behavior header
         }
         current += 1;
 
-        // Behavior packs
         if bp_len == 0 {
             if selected == current {
-                return; // "(none installed)" line
+                return None;
             }
-            // current += 1; // not needed
         } else {
             for i in 0..bp_len {
                 if selected == current {
-                    self.toggle_pack_by_index(false, i);
-
-                    return;
+                    return Some((false, i));
                 }
                 current += 1;
             }
         }
+        None
     }
 
     fn toggle_pack_by_index(&mut self, is_resource: bool, idx: usize) {
