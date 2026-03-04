@@ -39,9 +39,10 @@ pub fn render(app: &App, frame: &mut Frame) {
         AppMode::AddConnection {
             input,
             path_input,
+            container_input,
             step,
         } => {
-            render_add_connection_modal(input, path_input, step, frame, area);
+            render_add_connection_modal(input, path_input, container_input, step, frame, area);
         }
         AppMode::ManageConnections => {
             render_manage_connections_modal(app, frame, area);
@@ -581,7 +582,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
             AppMode::Normal => Line::from(vec![
                 kb(" q ", "quit"),
                 Span::raw("  "),
-                kb(" ↑↓ ", "nav"),
+                kb(" ↑↓/j/k ", "nav"),
                 Span::raw("  "),
                 kb(" a ", "add"),
                 Span::raw("  "),
@@ -620,6 +621,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
                 let step_text = match step {
                     ConnectionStep::Name => "Enter connection name",
                     ConnectionStep::Path => "Enter server path",
+                    ConnectionStep::Container => "Enter Docker container (optional)",
                 };
                 Line::from(vec![
                     Span::styled(format!(" {} ", step_text), Style::default().fg(Color::Cyan)),
@@ -630,7 +632,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
                 ])
             }
             AppMode::ManageConnections => Line::from(vec![
-                kb(" ↑↓ ", "select"),
+                kb(" ↑↓/j/k ", "select"),
                 Span::raw("  "),
                 kb(" Enter ", "view"),
                 Span::raw("  "),
@@ -646,7 +648,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
                 kb(" n ", "no"),
             ]),
             AppMode::ViewLogs { .. } => Line::from(vec![
-                kb(" ↑↓ ", "scroll"),
+                kb(" ↑↓/j/k ", "scroll"),
                 Span::raw("  "),
                 kb(" PgUp/PgDn ", "page"),
                 Span::raw("  "),
@@ -655,7 +657,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
             AppMode::ManagePacks { moving, .. } => {
                 if *moving {
                     Line::from(vec![
-                        kb(" ↑↓ ", "move"),
+                        kb(" ↑↓/j/k ", "move"),
                         Span::raw("  "),
                         kb(" Enter/m ", "drop"),
                         Span::raw("  "),
@@ -663,7 +665,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
                     ])
                 } else {
                     Line::from(vec![
-                        kb(" ↑↓ ", "navigate"),
+                        kb(" ↑↓/j/k ", "navigate"),
                         Span::raw("  "),
                         kb(" m ", "pick/move"),
                         Span::raw("  "),
@@ -687,7 +689,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
                     ])
                 } else {
                     Line::from(vec![
-                        kb(" ↑↓ ", "navigate"),
+                        kb(" ↑↓/j/k ", "navigate"),
                         Span::raw("  "),
                         kb(" Enter ", "edit value"),
                         Span::raw("  "),
@@ -797,6 +799,7 @@ fn render_install_modal(app: &App, frame: &mut Frame, area: Rect) {
 fn render_add_connection_modal(
     input: &str,
     path_input: &str,
+    container_input: &str,
     step: &ConnectionStep,
     frame: &mut Frame,
 
@@ -818,6 +821,7 @@ fn render_add_connection_modal(
     let (current_input, prompt) = match step {
         ConnectionStep::Name => (input, "Connection Name:"),
         ConnectionStep::Path => (path_input, "Server Path:"),
+        ConnectionStep::Container => (container_input, "Docker Container (optional):"),
     };
 
     let content = Text::from(vec![
@@ -846,6 +850,10 @@ fn render_add_connection_modal(
         )),
         Line::from(Span::styled(
             "    • ./servers/survival-world",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(Span::styled(
+            "    • bedrock-main (container name)",
             Style::default().fg(Color::DarkGray),
         )),
         Line::from(""),

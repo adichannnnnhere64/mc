@@ -187,6 +187,14 @@ impl ServerInstance {
     }
 
     pub fn from_path(path: &Path, custom_name: Option<&str>) -> Self {
+        Self::from_path_with_container(path, custom_name, None)
+    }
+
+    pub fn from_path_with_container(
+        path: &Path,
+        custom_name: Option<&str>,
+        container_name_override: Option<&str>,
+    ) -> Self {
         let name = custom_name
             .map(|s| s.to_string())
             .or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()))
@@ -208,11 +216,11 @@ impl ServerInstance {
         let (server_type, port) = detect_server_config(path);
         // Use the new helper for status detection
         let status = detect_server_status(&server_type, port, path);
-        let container_name = if server_type == ServerType::Bedrock {
-            find_docker_container(path)
-        } else {
-            None
-        };
+        let container_name = container_name_override
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| find_docker_container(path));
 
         let pid = if let Some(ref c) = container_name {
             find_pid_for_container(c)
@@ -485,7 +493,8 @@ fn is_udp_port_in_use(port: u16) -> bool {
 }
 
 fn find_docker_container(server_path: &Path) -> Option<String> {
-    let ids_out = Command::new("docker").args(["ps", "-q"]).output().ok()?;
+    // Include stopped containers so explicit restart works even when not running.
+    let ids_out = Command::new("docker").args(["ps", "-aq"]).output().ok()?;
     if !ids_out.status.success() || ids_out.stdout.is_empty() {
         return None;
     }

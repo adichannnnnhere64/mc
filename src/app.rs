@@ -32,6 +32,7 @@ pub enum AppMode {
     AddConnection {
         input: String,
         path_input: String,
+        container_input: String,
         step: ConnectionStep,
     },
     ManageConnections,
@@ -62,6 +63,7 @@ pub enum AppMode {
 pub enum ConnectionStep {
     Name,
     Path,
+    Container,
 }
 
 #[derive(Debug)]
@@ -171,8 +173,8 @@ impl App {
                 self.events.send(AppEvent::Quit)
             }
 
-            KeyCode::Up => self.events.send(AppEvent::SelectPrev),
-            KeyCode::Down => self.events.send(AppEvent::SelectNext),
+            KeyCode::Up | KeyCode::Char('k') => self.events.send(AppEvent::SelectPrev),
+            KeyCode::Down | KeyCode::Char('j') => self.events.send(AppEvent::SelectNext),
             KeyCode::Char('i') => {
                 if !self.servers.is_empty() {
                     self.mode = AppMode::Installing {
@@ -190,6 +192,7 @@ impl App {
                 self.mode = AppMode::AddConnection {
                     input: String::new(),
                     path_input: String::new(),
+                    container_input: String::new(),
                     step: ConnectionStep::Name,
                 };
             }
@@ -358,12 +361,13 @@ impl App {
                 self.message = None;
             }
             KeyCode::Enter => {
-                let (name, path_str, step) = match &self.mode {
+                let (name, path_str, container_input, step) = match &self.mode {
                     AppMode::AddConnection {
                         input,
                         path_input,
+                        container_input,
                         step,
-                    } => (input.clone(), path_input.clone(), step),
+                    } => (input.clone(), path_input.clone(), container_input.clone(), step),
                     _ => return,
                 };
                 match step {
@@ -375,12 +379,33 @@ impl App {
                         self.mode = AppMode::AddConnection {
                             input: name,
                             path_input: String::new(),
+                            container_input: String::new(),
                             step: ConnectionStep::Path,
                         };
                     }
                     ConnectionStep::Path => {
+                        if path_str.trim().is_empty() {
+                            self.message = Some("Server path cannot be empty".into());
+                            return;
+                        }
+                        self.mode = AppMode::AddConnection {
+                            input: name,
+                            path_input: path_str,
+                            container_input: String::new(),
+                            step: ConnectionStep::Container,
+                        };
+                    }
+                    ConnectionStep::Container => {
                         let path = PathBuf::from(path_str.trim());
-                        match self.connections.add_connection(name.clone(), path) {
+                        let container_name = if container_input.trim().is_empty() {
+                            None
+                        } else {
+                            Some(container_input.trim().to_string())
+                        };
+                        match self
+                            .connections
+                            .add_connection(name.clone(), path, container_name)
+                        {
                             Ok(_) => {
                                 self.message = Some(format!("Added connection: {}", name));
                                 self.mode = AppMode::Normal;
@@ -398,6 +423,7 @@ impl App {
                 AppMode::AddConnection {
                     input,
                     path_input,
+                    container_input,
                     step,
                 } => match step {
                     ConnectionStep::Name => {
@@ -406,6 +432,9 @@ impl App {
                     ConnectionStep::Path => {
                         path_input.pop();
                     }
+                    ConnectionStep::Container => {
+                        container_input.pop();
+                    }
                 },
                 _ => {}
             },
@@ -413,10 +442,12 @@ impl App {
                 AppMode::AddConnection {
                     input,
                     path_input,
+                    container_input,
                     step,
                 } => match step {
                     ConnectionStep::Name => input.push(c),
                     ConnectionStep::Path => path_input.push(c),
+                    ConnectionStep::Container => container_input.push(c),
                 },
 
                 _ => {}
@@ -432,12 +463,12 @@ impl App {
                 self.mode = AppMode::Normal;
             }
 
-            KeyCode::Up => {
+            KeyCode::Up | KeyCode::Char('k') => {
                 if self.selected_connection > 0 {
                     self.selected_connection -= 1;
                 }
             }
-            KeyCode::Down => {
+            KeyCode::Down | KeyCode::Char('j') => {
                 if self.selected_connection + 1 < self.connections.connections.len() {
                     self.selected_connection += 1;
                 }
@@ -452,12 +483,18 @@ impl App {
             KeyCode::Enter => {
                 if !self.connections.connections.is_empty() {
                     let conn = &self.connections.connections[self.selected_connection];
+                    let container = conn
+                        .container_name
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("(auto-detect)");
 
                     self.message = Some(format!(
-                        "Connection: {} → {} {}",
+                        "Connection: {} → {} {} container: {}",
                         conn.name,
                         conn.path.display(),
-                        if conn.is_symlink { "(symlink)" } else { "" }
+                        if conn.is_symlink { "(symlink)" } else { "" },
+                        container
                     ));
                 }
             }
@@ -495,13 +532,13 @@ impl App {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.mode = AppMode::Normal;
             }
-            KeyCode::Down => {
+            KeyCode::Down | KeyCode::Char('j') => {
                 if let AppMode::ViewLogs { scroll } = &mut self.mode {
                     *scroll = scroll.saturating_add(1);
                 }
             }
 
-            KeyCode::Up => {
+            KeyCode::Up | KeyCode::Char('k') => {
                 if let AppMode::ViewLogs { scroll } = &mut self.mode {
                     *scroll = scroll.saturating_sub(1);
                 }
@@ -562,7 +599,7 @@ impl App {
                     self.mode = AppMode::Normal;
                 }
             }
-            KeyCode::Up => {
+            KeyCode::Up | KeyCode::Char('k') => {
                 if moving {
                     if self.reorder_pack_by_selected(
                         selected,
@@ -577,7 +614,7 @@ impl App {
                     *selected = selected.saturating_sub(1);
                 }
             }
-            KeyCode::Down => {
+            KeyCode::Down | KeyCode::Char('j') => {
                 if moving {
                     if self.reorder_pack_by_selected(
                         selected,
@@ -737,12 +774,12 @@ impl App {
                 KeyCode::Esc => {
                     self.mode = AppMode::Normal;
                 }
-                KeyCode::Up => {
+                KeyCode::Up | KeyCode::Char('k') => {
                     if let AppMode::EditConfig { selected, .. } = &mut self.mode {
                         *selected = selected.saturating_sub(1);
                     }
                 }
-                KeyCode::Down => {
+                KeyCode::Down | KeyCode::Char('j') => {
                     if let AppMode::EditConfig { selected, .. } = &mut self.mode {
                         if *selected + 1 < props_len {
                             *selected += 1;
@@ -1113,7 +1150,11 @@ fn discover_servers_with_connections(
 
     for conn in &connections.connections {
         if conn.path.exists() {
-            let server = ServerInstance::from_path(&conn.path, Some(&conn.name));
+            let server = ServerInstance::from_path_with_container(
+                &conn.path,
+                Some(&conn.name),
+                conn.container_name.as_deref(),
+            );
             servers.push(server);
         }
     }

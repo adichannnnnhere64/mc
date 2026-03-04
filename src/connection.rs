@@ -9,6 +9,8 @@ pub struct Connection {
     pub name: String,
     pub path: PathBuf,
     #[serde(default)]
+    pub container_name: Option<String>,
+    #[serde(default)]
     pub is_symlink: bool,
 
     #[serde(with = "chrono::serde::ts_seconds")]
@@ -41,7 +43,12 @@ impl ConnectionConfig {
         Ok(())
     }
 
-    pub fn add_connection(&mut self, name: String, path: PathBuf) -> color_eyre::Result<()> {
+    pub fn add_connection(
+        &mut self,
+        name: String,
+        path: PathBuf,
+        container_name: Option<String>,
+    ) -> color_eyre::Result<()> {
         // Validate path exists
         if !path.exists() {
             return Err(color_eyre::eyre::eyre!(
@@ -72,6 +79,9 @@ impl ConnectionConfig {
         self.connections.push(Connection {
             name,
             path,
+            container_name: container_name
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
             is_symlink,
             created_at: chrono::Utc::now(), // Use Utc::now()
         });
