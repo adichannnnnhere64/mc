@@ -124,8 +124,9 @@ impl App {
             match self.events.next().await? {
                 Event::Tick => {
                     self.tick_count = self.tick_count.wrapping_add(1);
-                    // Auto-refresh server statuses every ~2 seconds (60 ticks at 30 fps)
-                    if self.tick_count % 60 == 0 {
+                    // Full rediscovery is heavier; keep it infrequent and rely on UpdateStatuses
+                    // for lightweight live metrics.
+                    if self.tick_count % 900 == 0 {
                         self.run_auto_refresh();
                     }
                 }

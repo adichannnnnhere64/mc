@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::{Read, Write},
     net::{TcpStream, UdpSocket},
     path::{Path, PathBuf},
     process::Command,
@@ -23,6 +24,16 @@ pub struct ServerInstance {
     pub container_name: Option<String>,
     pub pid: Option<u32>,
     pub ram_mb: Option<u64>,
+    pub cpu_percent: Option<f32>,
+    pub players_online: Option<u32>,
+    pub players_max: Option<u32>,
+    cpu_sample: Option<CpuSnapshot>,
+}
+
+#[derive(Debug, Clone)]
+struct CpuSnapshot {
+    process_jiffies: u64,
+    total_jiffies: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -31,9 +42,7 @@ pub struct InstalledPack {
     pub name: String,
     pub version: Vec<u32>,
     pub enabled: bool,
-
 }
-
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServerType {
@@ -78,7 +87,6 @@ pub struct PackEntry {
     pub version: Vec<u32>,
 }
 
-
 #[derive(Deserialize)]
 
 struct DiskManifestHeader {
@@ -97,23 +105,63 @@ impl ServerInstance {
     // NEW: Refresh status without rebuilding the whole instance
     pub fn refresh_status(&mut self) {
         self.status = detect_server_status(&self.server_type, self.port, &self.path);
+
+        if !matches!(self.status, ServerStatus::Running) {
+            self.pid = None;
+            self.ram_mb = None;
+            self.cpu_percent = None;
+            self.players_online = None;
+            self.players_max = None;
+            self.cpu_sample = None;
+            return;
+        }
+
+        self.pid = if let Some(ref c) = self.container_name {
+            find_pid_for_container(c)
+        } else {
+            find_process_pid(&self.server_type)
+        };
+
+        let (ram_mb, cpu_percent) = if let Some(container) = self.container_name.as_deref() {
+            get_docker_stats(container)
+                .map(|(ram, cpu)| (Some(ram), Some(cpu)))
+                .unwrap_or((None, None))
+        } else {
+            let ram = self.pid.and_then(get_process_ram_mb);
+            let cpu = self.pid.and_then(|pid| {
+                let current = read_cpu_snapshot(pid)?;
+                let cpu = self
+                    .cpu_sample
+                    .as_ref()
+                    .and_then(|prev| calc_cpu_percent(prev, &current));
+                self.cpu_sample = Some(current);
+                cpu
+            });
+            (ram, cpu)
+        };
+
+        self.ram_mb = ram_mb;
+        self.cpu_percent = cpu_percent;
+
+        let players = match self.server_type {
+            ServerType::Java => self.port.and_then(query_java_player_count),
+            ServerType::Bedrock => self.port.and_then(query_bedrock_player_count),
+            ServerType::Unknown => None,
+        };
+        self.players_online = players.map(|(online, _)| online);
+        self.players_max = players.map(|(_, max)| max);
     }
 
-
     pub fn from_path(path: &Path, custom_name: Option<&str>) -> Self {
-
         let name = custom_name
             .map(|s| s.to_string())
             .or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()))
-
             .unwrap_or_else(|| "Unknown".to_string());
-
 
         let resource_packs = load_pack_list(&path.join("resource_packs.json"));
         let behavior_packs = load_pack_list(&path.join("behavior_packs.json"));
 
         let installed_resource_packs =
-
             discover_installed_packs(&path.join("resource_packs"), &resource_packs);
         let installed_behavior_packs =
             discover_installed_packs(&path.join("behavior_packs"), &behavior_packs);
@@ -124,7 +172,6 @@ impl ServerInstance {
         let container_name = if server_type == ServerType::Bedrock {
             find_docker_container(path)
         } else {
-
             None
         };
 
@@ -136,9 +183,21 @@ impl ServerInstance {
             None
         };
 
-        let ram_mb = pid
-            .and_then(get_process_ram_mb)
-            .or_else(|| container_name.as_deref().and_then(get_docker_ram_mb));
+        let ram_mb = pid.and_then(get_process_ram_mb).or_else(|| {
+            container_name
+                .as_deref()
+                .and_then(|c| get_docker_stats(c).map(|(ram, _)| ram))
+        });
+
+        let players = if matches!(status, ServerStatus::Running) {
+            match server_type {
+                ServerType::Java => port.and_then(query_java_player_count),
+                ServerType::Bedrock => port.and_then(query_bedrock_player_count),
+                ServerType::Unknown => None,
+            }
+        } else {
+            None
+        };
 
         ServerInstance {
             name,
@@ -155,6 +214,10 @@ impl ServerInstance {
             container_name,
             pid,
             ram_mb,
+            cpu_percent: None,
+            players_online: players.map(|(online, _)| online),
+            players_max: players.map(|(_, max)| max),
+            cpu_sample: None,
         }
     }
 }
@@ -162,13 +225,11 @@ impl ServerInstance {
 // NEW: Helper to determine status based on type and port
 fn detect_server_status(server_type: &ServerType, port: Option<u16>, path: &Path) -> ServerStatus {
     match server_type {
-
         ServerType::Bedrock => {
             let udp_port = port.unwrap_or(19132);
             if is_udp_port_in_use(udp_port) {
                 ServerStatus::Running
             } else {
-
                 detect_server_process(path)
             }
         }
@@ -176,7 +237,6 @@ fn detect_server_status(server_type: &ServerType, port: Option<u16>, path: &Path
         ServerType::Java => {
             if let Some(p) = port {
                 if is_port_in_use(p) {
-
                     ServerStatus::Running
                 } else {
                     detect_server_process(path)
@@ -188,7 +248,6 @@ fn detect_server_status(server_type: &ServerType, port: Option<u16>, path: &Path
         ServerType::Unknown => detect_server_process(path),
     }
 }
-
 
 fn discover_installed_packs(pack_dir: &Path, enabled_entries: &[PackEntry]) -> Vec<InstalledPack> {
     let Ok(entries) = fs::read_dir(pack_dir) else {
@@ -213,7 +272,6 @@ fn discover_installed_packs(pack_dir: &Path, enabled_entries: &[PackEntry]) -> V
         })
         .collect();
 
-
     packs.sort_by(|a, b| a.name.cmp(&b.name));
     packs
 }
@@ -222,7 +280,6 @@ fn detect_server_config(server_path: &Path) -> (ServerType, Option<u16>) {
     let bedrock_props = server_path.join("server.properties");
     let bedrock_exe = server_path.join("bedrock_server");
     let bedrock_exe_windows = server_path.join("bedrock_server.exe");
-
 
     if bedrock_props.exists() || bedrock_exe.exists() || bedrock_exe_windows.exists() {
         if let Some(port) = read_bedrock_port(&bedrock_props) {
@@ -253,9 +310,7 @@ fn read_bedrock_port(props_path: &Path) -> Option<u16> {
     let content = fs::read_to_string(props_path).ok()?;
     for line in content.lines() {
         if line.starts_with("server-port=") {
-
             if let Some(port_str) = line.split('=').nth(1) {
-
                 if let Ok(port) = port_str.trim().parse::<u16>() {
                     return Some(port);
                 }
@@ -267,9 +322,7 @@ fn read_bedrock_port(props_path: &Path) -> Option<u16> {
 
 fn read_java_port(props_path: &Path) -> Option<u16> {
     if !props_path.exists() {
-
         return None;
-
     }
     let content = fs::read_to_string(props_path).ok()?;
     for line in content.lines() {
@@ -277,15 +330,12 @@ fn read_java_port(props_path: &Path) -> Option<u16> {
             if let Some(port_str) = line.split('=').nth(1) {
                 if let Ok(port) = port_str.trim().parse::<u16>() {
                     return Some(port);
-
                 }
             }
         }
     }
     None
-
 }
-
 
 fn is_port_in_use(port: u16) -> bool {
     TcpStream::connect_timeout(
@@ -293,9 +343,7 @@ fn is_port_in_use(port: u16) -> bool {
         Duration::from_millis(100),
     )
     .is_ok()
-
 }
-
 
 fn is_udp_port_in_use(port: u16) -> bool {
     UdpSocket::bind(("0.0.0.0", port)).is_err()
@@ -313,7 +361,12 @@ fn find_docker_container(server_path: &Path) -> Option<String> {
             continue;
         }
         let mounts = Command::new("docker")
-            .args(["inspect", "--format", "{{range .Mounts}}{{.Source}} {{end}}", id])
+            .args([
+                "inspect",
+                "--format",
+                "{{range .Mounts}}{{.Source}} {{end}}",
+                id,
+            ])
             .output()
             .ok()?;
         let mounts_str = String::from_utf8_lossy(&mounts.stdout);
@@ -323,7 +376,6 @@ fn find_docker_container(server_path: &Path) -> Option<String> {
                 .output()
                 .ok()?;
             let name = String::from_utf8_lossy(&name_out.stdout)
-
                 .trim()
                 .trim_start_matches('/')
                 .to_string();
@@ -336,7 +388,6 @@ fn find_docker_container(server_path: &Path) -> Option<String> {
 }
 
 pub fn read_docker_logs(container: &str, tail: usize) -> Vec<String> {
-
     let result = Command::new("docker")
         .args(["logs", "--tail", &tail.to_string(), container])
         .output();
@@ -348,14 +399,12 @@ pub fn read_docker_logs(container: &str, tail: usize) -> Vec<String> {
                 (true, _) => stderr.into_owned(),
                 (_, true) => stdout.into_owned(),
                 _ => format!("{}{}", stdout, stderr),
-
             };
             combined.lines().map(|l| l.to_string()).collect()
         }
         Err(e) => vec![format!("docker logs error: {e}")],
     }
 }
-
 
 // ─── PID / RAM helpers ────────────────────────────────────────────────────────
 
@@ -403,23 +452,30 @@ fn get_process_ram_mb(pid: u32) -> Option<u64> {
     None
 }
 
-fn get_docker_ram_mb(container: &str) -> Option<u64> {
+fn get_docker_stats(container: &str) -> Option<(u64, f32)> {
     let out = Command::new("docker")
         .args([
             "stats",
             "--no-stream",
             "--format",
-            "{{.MemUsage}}",
+            "{{.CPUPerc}}|{{.MemUsage}}",
             container,
         ])
         .output()
         .ok()?;
     if out.status.success() {
         let s = String::from_utf8_lossy(&out.stdout);
-        parse_docker_mem(s.trim())
+        let mut parts = s.trim().split('|');
+        let cpu = parts.next().and_then(parse_docker_cpu_percent)?;
+        let ram = parts.next().and_then(parse_docker_mem)?;
+        Some((ram, cpu))
     } else {
         None
     }
+}
+
+fn parse_docker_cpu_percent(s: &str) -> Option<f32> {
+    s.trim().strip_suffix('%')?.trim().parse::<f32>().ok()
 }
 
 fn parse_docker_mem(s: &str) -> Option<u64> {
@@ -441,6 +497,195 @@ fn parse_docker_mem(s: &str) -> Option<u64> {
         return v.trim().parse::<f64>().ok().map(|x| x as u64);
     }
     None
+}
+
+#[cfg(target_os = "linux")]
+fn read_total_cpu_jiffies() -> Option<u64> {
+    let stat = fs::read_to_string("/proc/stat").ok()?;
+    let mut parts = stat.lines().next()?.split_whitespace();
+    if parts.next()? != "cpu" {
+        return None;
+    }
+    parts
+        .filter_map(|p| p.parse::<u64>().ok())
+        .try_fold(0_u64, |acc, v| acc.checked_add(v))
+}
+
+#[cfg(target_os = "linux")]
+fn read_process_jiffies(pid: u32) -> Option<u64> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (_, after_cmd) = stat.rsplit_once(") ")?;
+    let fields: Vec<&str> = after_cmd.split_whitespace().collect();
+    let utime = fields.get(11)?.parse::<u64>().ok()?;
+    let stime = fields.get(12)?.parse::<u64>().ok()?;
+    utime.checked_add(stime)
+}
+
+#[cfg(target_os = "linux")]
+fn read_cpu_snapshot(pid: u32) -> Option<CpuSnapshot> {
+    Some(CpuSnapshot {
+        process_jiffies: read_process_jiffies(pid)?,
+        total_jiffies: read_total_cpu_jiffies()?,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn calc_cpu_percent(prev: &CpuSnapshot, current: &CpuSnapshot) -> Option<f32> {
+    let proc_delta = current.process_jiffies.checked_sub(prev.process_jiffies)?;
+    let total_delta = current.total_jiffies.checked_sub(prev.total_jiffies)?;
+    if total_delta == 0 {
+        return None;
+    }
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get() as f32)
+        .unwrap_or(1.0);
+    Some((proc_delta as f32 / total_delta as f32) * 100.0 * cores)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_cpu_snapshot(_pid: u32) -> Option<CpuSnapshot> {
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn calc_cpu_percent(_prev: &CpuSnapshot, _current: &CpuSnapshot) -> Option<f32> {
+    None
+}
+
+fn query_java_player_count(port: u16) -> Option<(u32, u32)> {
+    let addr = format!("127.0.0.1:{port}");
+    let mut stream =
+        TcpStream::connect_timeout(&addr.parse().ok()?, Duration::from_millis(120)).ok()?;
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(120)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(120)));
+
+    let mut handshake = Vec::with_capacity(32);
+    write_varint(&mut handshake, 0x00);
+    write_varint(&mut handshake, 760);
+    write_varint(&mut handshake, 9);
+    handshake.extend_from_slice(b"localhost");
+    handshake.extend_from_slice(&port.to_be_bytes());
+    write_varint(&mut handshake, 1);
+    write_packet(&mut stream, &handshake).ok()?;
+
+    write_packet(&mut stream, &[0x00]).ok()?;
+
+    let payload = read_packet(&mut stream)?;
+    let mut cursor = 0;
+    let packet_id = read_varint_from_slice(&payload, &mut cursor)?;
+    if packet_id != 0x00 {
+        return None;
+    }
+    let json_len = read_varint_from_slice(&payload, &mut cursor)? as usize;
+    let remaining = payload.get(cursor..)?;
+    if remaining.len() < json_len {
+        return None;
+    }
+    let json = std::str::from_utf8(&remaining[..json_len]).ok()?;
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let players = value.get("players")?;
+    let online = players.get("online")?.as_u64()? as u32;
+    let max = players.get("max")?.as_u64()? as u32;
+    Some((online, max))
+}
+
+fn query_bedrock_player_count(port: u16) -> Option<(u32, u32)> {
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    let _ = socket.set_read_timeout(Some(Duration::from_millis(120)));
+    let _ = socket.set_write_timeout(Some(Duration::from_millis(120)));
+
+    let mut packet = Vec::with_capacity(32);
+    packet.push(0x01);
+    packet.extend_from_slice(&0_i64.to_be_bytes());
+    packet.extend_from_slice(&[
+        0x00, 0xff, 0xff, 0x00, 0xfe, 0xfe, 0xfe, 0xfe, 0xfd, 0xfd, 0xfd, 0xfd, 0x12, 0x34, 0x56,
+        0x78,
+    ]);
+    packet.extend_from_slice(&0_i64.to_be_bytes());
+
+    socket.send_to(&packet, ("127.0.0.1", port)).ok()?;
+
+    let mut buf = [0_u8; 2048];
+    let (n, _) = socket.recv_from(&mut buf).ok()?;
+    if n < 35 || buf[0] != 0x1c {
+        return None;
+    }
+
+    let str_len = u16::from_be_bytes([buf[33], buf[34]]) as usize;
+    if n < 35 + str_len {
+        return None;
+    }
+    let motd = std::str::from_utf8(&buf[35..35 + str_len]).ok()?;
+    let parts: Vec<&str> = motd.split(';').collect();
+    let online = parts.get(4)?.parse::<u32>().ok()?;
+    let max = parts.get(5)?.parse::<u32>().ok()?;
+    Some((online, max))
+}
+
+fn write_varint(buf: &mut Vec<u8>, mut value: i32) {
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        buf.push(byte);
+        if value == 0 {
+            break;
+        }
+    }
+}
+
+fn read_varint_from_slice(input: &[u8], cursor: &mut usize) -> Option<i32> {
+    let mut num_read = 0;
+    let mut result = 0_i32;
+    loop {
+        let byte = *input.get(*cursor)?;
+        let value = i32::from(byte & 0x7f);
+        result |= value << (7 * num_read);
+        num_read += 1;
+        *cursor += 1;
+        if num_read > 5 {
+            return None;
+        }
+        if byte & 0x80 == 0 {
+            break;
+        }
+    }
+    Some(result)
+}
+
+fn write_packet(stream: &mut TcpStream, payload: &[u8]) -> std::io::Result<()> {
+    let mut frame = Vec::with_capacity(payload.len() + 5);
+    write_varint(&mut frame, payload.len() as i32);
+    frame.extend_from_slice(payload);
+    stream.write_all(&frame)
+}
+
+fn read_packet(stream: &mut TcpStream) -> Option<Vec<u8>> {
+    let length = read_varint_from_stream(stream)? as usize;
+    let mut payload = vec![0_u8; length];
+    stream.read_exact(&mut payload).ok()?;
+    Some(payload)
+}
+
+fn read_varint_from_stream(stream: &mut TcpStream) -> Option<i32> {
+    let mut num_read = 0;
+    let mut result = 0_i32;
+    loop {
+        let mut byte = [0_u8; 1];
+        stream.read_exact(&mut byte).ok()?;
+        let value = i32::from(byte[0] & 0x7f);
+        result |= value << (7 * num_read);
+        num_read += 1;
+        if num_read > 5 {
+            return None;
+        }
+        if byte[0] & 0x80 == 0 {
+            break;
+        }
+    }
+    Some(result)
 }
 
 // ─── Server control ───────────────────────────────────────────────────────────
@@ -490,7 +735,9 @@ pub fn restart_server(instance: &ServerInstance) -> Result<String, String> {
                 .output()
                 .map_err(|e| e.to_string())?;
             if out.status.success() {
-                return Ok(format!("Sent SIGTERM to PID {pid}. Start the server manually if no auto-restart is configured."));
+                return Ok(format!(
+                    "Sent SIGTERM to PID {pid}. Start the server manually if no auto-restart is configured."
+                ));
             }
         }
         Err("Could not signal the server process.".into())
@@ -528,8 +775,10 @@ pub fn write_server_properties(
     let original = fs::read_to_string(&path).unwrap_or_default();
 
     // Build a lookup of new values
-    let new_vals: std::collections::HashMap<&str, &str> =
-        props.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let new_vals: std::collections::HashMap<&str, &str> = props
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
 
     let mut out = String::new();
     let mut seen = std::collections::HashSet::new();
@@ -569,16 +818,25 @@ pub fn write_server_properties(
 /// Detect if server process is running
 
 fn detect_server_process(server_path: &Path) -> ServerStatus {
-    let server_name = server_path.file_name().unwrap_or_default().to_string_lossy();
+    let server_name = server_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
 
     #[cfg(target_os = "linux")]
     {
-        if let Ok(output) = Command::new("pgrep").args(["-f", "bedrock_server"]).output() {
+        if let Ok(output) = Command::new("pgrep")
+            .args(["-f", "bedrock_server"])
+            .output()
+        {
             if output.status.success() {
                 return ServerStatus::Running;
             }
         }
-        if let Ok(output) = Command::new("pgrep").args(["-f", "java.*server.jar"]).output() {
+        if let Ok(output) = Command::new("pgrep")
+            .args(["-f", "java.*server.jar"])
+            .output()
+        {
             if output.status.success() {
                 return ServerStatus::Running;
             }
@@ -600,10 +858,8 @@ fn detect_server_process(server_path: &Path) -> ServerStatus {
             .args(["/FI", "IMAGENAME eq java.exe", "/FO", "CSV"])
             .output()
         {
-
             let output_str = String::from_utf8_lossy(&output.stdout);
             if output_str.contains("java.exe") && output_str.contains(&*server_name) {
-
                 return ServerStatus::Running;
             }
         }
@@ -611,18 +867,22 @@ fn detect_server_process(server_path: &Path) -> ServerStatus {
 
     #[cfg(target_os = "macos")]
     {
-
-        if let Ok(output) = Command::new("pgrep").args(["-f", "bedrock_server"]).output() {
+        if let Ok(output) = Command::new("pgrep")
+            .args(["-f", "bedrock_server"])
+            .output()
+        {
             if output.status.success() {
                 return ServerStatus::Running;
             }
         }
-        if let Ok(output) = Command::new("pgrep").args(["-f", "java.*server.jar"]).output() {
+        if let Ok(output) = Command::new("pgrep")
+            .args(["-f", "java.*server.jar"])
+            .output()
+        {
             if output.status.success() {
                 return ServerStatus::Running;
             }
         }
-
     }
 
     ServerStatus::Stopped
@@ -635,13 +895,11 @@ pub fn discover_servers(base: &Path) -> Vec<ServerInstance> {
     entries
         .flatten()
         .filter(|e| e.path().is_dir())
-
         .map(|e| ServerInstance::from_path(&e.path(), None))
         .collect()
 }
 
 fn load_pack_list(path: &Path) -> Vec<PackEntry> {
-
     let Ok(content) = fs::read_to_string(path) else {
         return Vec::new();
     };

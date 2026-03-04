@@ -12,7 +12,7 @@ pub struct Connection {
     pub is_symlink: bool,
 
     #[serde(with = "chrono::serde::ts_seconds")]
-    pub created_at: chrono::DateTime<chrono::Utc>,  // Use Utc instead of Local
+    pub created_at: chrono::DateTime<chrono::Utc>, // Use Utc instead of Local
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,22 +41,29 @@ impl ConnectionConfig {
         Ok(())
     }
 
-
     pub fn add_connection(&mut self, name: String, path: PathBuf) -> color_eyre::Result<()> {
         // Validate path exists
         if !path.exists() {
-
-            return Err(color_eyre::eyre::eyre!("Path does not exist: {}", path.display()));
+            return Err(color_eyre::eyre::eyre!(
+                "Path does not exist: {}",
+                path.display()
+            ));
         }
 
         // Check if path is a directory
         if !path.is_dir() {
-            return Err(color_eyre::eyre::eyre!("Path is not a directory: {}", path.display()));
+            return Err(color_eyre::eyre::eyre!(
+                "Path is not a directory: {}",
+                path.display()
+            ));
         }
 
         // Check for duplicate names
         if self.connections.iter().any(|c| c.name == name) {
-            return Err(color_eyre::eyre::eyre!("Connection name already exists: {}", name));
+            return Err(color_eyre::eyre::eyre!(
+                "Connection name already exists: {}",
+                name
+            ));
         }
 
         // Detect if it's a symlink
@@ -66,7 +73,7 @@ impl ConnectionConfig {
             name,
             path,
             is_symlink,
-            created_at: chrono::Utc::now(),  // Use Utc::now()
+            created_at: chrono::Utc::now(), // Use Utc::now()
         });
 
         self.save()?;
@@ -79,7 +86,6 @@ impl ConnectionConfig {
             self.save()?;
         }
         Ok(())
-
     }
 
     pub fn get_server_paths(&self) -> Vec<PathBuf> {

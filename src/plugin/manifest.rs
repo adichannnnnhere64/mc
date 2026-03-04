@@ -1,5 +1,5 @@
-use std::fmt;
-use serde::{Deserialize, Serialize}; // Add Serialize
+use serde::{Deserialize, Serialize};
+use std::fmt; // Add Serialize
 
 #[derive(Debug, Deserialize, Serialize)] // Added Serialize
 pub struct Manifest {
@@ -15,9 +15,7 @@ pub struct ManifestHeader {
     pub version: Vec<u32>,
     pub name: Option<String>,
     pub description: Option<String>,
-
 }
-
 
 #[derive(Debug, Deserialize, Serialize)] // Added Serialize
 pub struct ManifestModule {

@@ -18,8 +18,11 @@ pub struct InstallResult {
 /// Install all packs found in `source_path` into the server at `server_path`.
 /// A single archive may contain both a BP and RP — both are installed.
 
-pub fn install(source_path: &Path, server_path: &Path, custom_name: Option<String>) -> color_eyre::Result<Vec<InstallResult>> {
-
+pub fn install(
+    source_path: &Path,
+    server_path: &Path,
+    custom_name: Option<String>,
+) -> color_eyre::Result<Vec<InstallResult>> {
     let manifest_dir = if source_path.is_dir() {
         source_path.to_path_buf()
     } else {
@@ -34,7 +37,6 @@ pub fn install(source_path: &Path, server_path: &Path, custom_name: Option<Strin
 
     let manifest_paths = find_all_manifests(&manifest_dir);
     if manifest_paths.is_empty() {
-
         cleanup_tmp(server_path);
 
         return Err(color_eyre::eyre::eyre!("No manifest.json found in archive"));
@@ -54,28 +56,26 @@ pub fn install(source_path: &Path, server_path: &Path, custom_name: Option<Strin
         }
     }
 
-
     cleanup_tmp(server_path);
 
     if results.is_empty() {
         return Err(color_eyre::eyre::eyre!("{}", errors.join("; ")));
     }
 
-
     Ok(results)
-
 }
 
-
-fn install_single(manifest_path: &Path, server_path: &Path, custom_name: Option<String>) -> color_eyre::Result<InstallResult> {
+fn install_single(
+    manifest_path: &Path,
+    server_path: &Path,
+    custom_name: Option<String>,
+) -> color_eyre::Result<InstallResult> {
     let manifest_content = fs::read_to_string(manifest_path)?;
     let mut manifest: Manifest = serde_json::from_str(&manifest_content)
         .map_err(|e| color_eyre::eyre::eyre!("Failed to parse manifest.json: {e}"))?;
 
-
     // Apply custom name if provided
     if let Some(name) = custom_name {
-
         manifest.header.name = Some(name);
 
         // Write back the modified manifest
@@ -86,9 +86,7 @@ fn install_single(manifest_path: &Path, server_path: &Path, custom_name: Option<
     let pack_type = manifest.pack_type();
     let pack_name = manifest
         .header
-
         .name
-
         .clone()
         .unwrap_or_else(|| manifest.header.uuid.clone());
 
@@ -97,7 +95,6 @@ fn install_single(manifest_path: &Path, server_path: &Path, custom_name: Option<
         PackType::Behavior => ("behavior_packs", "behavior_packs.json"),
 
         PackType::Unknown => {
-
             return Err(color_eyre::eyre::eyre!(
                 "Unknown pack type in {}",
                 manifest_path.display()
@@ -105,19 +102,19 @@ fn install_single(manifest_path: &Path, server_path: &Path, custom_name: Option<
         }
     };
 
-
     let pack_root = manifest_path.parent().expect("manifest has parent dir");
 
-    let pack_dest = server_path
-        .join(target_subdir)
-        .join(&manifest.header.uuid);
+    let pack_dest = server_path.join(target_subdir).join(&manifest.header.uuid);
 
     copy_dir_all(pack_root, &pack_dest)?;
 
     let json_path = server_path.join(json_file);
     update_pack_list(&json_path, &manifest.header.uuid, &manifest.header.version)?;
 
-    Ok(InstallResult { pack_name, pack_type })
+    Ok(InstallResult {
+        pack_name,
+        pack_type,
+    })
 }
 
 /// Enable or disable a pack by updating its JSON list file.
@@ -161,7 +158,9 @@ fn find_all_manifests(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn collect_manifests(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {

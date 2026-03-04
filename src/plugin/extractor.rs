@@ -5,8 +5,8 @@ use std::{fs, io, path::Path};
 /// Basic path-traversal protection: entries containing `..` are skipped.
 pub fn extract_zip(archive_path: &Path, target_dir: &Path) -> io::Result<()> {
     let file = fs::File::open(archive_path)?;
-    let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
     fs::create_dir_all(target_dir)?;
 

@@ -18,6 +18,8 @@ use crate::{
 
 const RAM_WARN_MB: u64 = 512;
 const RAM_HIGH_MB: u64 = 1024;
+const CPU_WARN_PERCENT: f32 = 70.0;
+const CPU_HIGH_PERCENT: f32 = 90.0;
 
 pub fn render(app: &App, frame: &mut Frame) {
     let area = frame.area();
@@ -30,11 +32,15 @@ pub fn render(app: &App, frame: &mut Frame) {
     render_status_bar(app, frame, vertical[1]);
 
     match &app.mode {
-        AppMode::Installing { .. } => {  // No need to destructure here, just pass app
+        AppMode::Installing { .. } => {
+            // No need to destructure here, just pass app
             render_install_modal(app, frame, area);
         }
-        AppMode::AddConnection { input, path_input, step } => {
-
+        AppMode::AddConnection {
+            input,
+            path_input,
+            step,
+        } => {
             render_add_connection_modal(input, path_input, step, frame, area);
         }
         AppMode::ManageConnections => {
@@ -50,12 +56,17 @@ pub fn render(app: &App, frame: &mut Frame) {
     }
 }
 
-
 // ─── Sidebar ────────────────────────────────────────────────────────────────
 
 fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
+    let (online_users, max_users) = total_users(app);
     let block = Block::bordered()
-        .title(format!(" Servers ({}) ", app.servers.len()))
+        .title(format!(
+            " Servers ({}) • Users {}/{} ",
+            app.servers.len(),
+            online_users,
+            max_users
+        ))
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray));
 
@@ -295,7 +306,13 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
         render_manage_packs(app, *selected, frame, area);
         return;
     }
-    if let AppMode::EditConfig { props, selected, editing, edit_input } = &app.mode {
+    if let AppMode::EditConfig {
+        props,
+        selected,
+        editing,
+        edit_input,
+    } = &app.mode
+    {
         render_edit_config(props, *selected, *editing, edit_input, frame, area);
         return;
     }
@@ -408,6 +425,31 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
             ),
         ]),
         Line::from(vec![
+            Span::styled("  CPU:      ", label_style),
+            Span::styled(
+                server
+                    .cpu_percent
+                    .map_or("—".into(), |c| format!("{c:.1}%")),
+                Style::default().fg(match server.cpu_percent {
+                    Some(c) if c >= CPU_HIGH_PERCENT => Color::Red,
+                    Some(c) if c >= CPU_WARN_PERCENT => Color::Yellow,
+                    Some(_) => Color::Green,
+                    None => Color::DarkGray,
+                }),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Players:  ", label_style),
+            Span::styled(
+                match (server.players_online, server.players_max) {
+                    (Some(online), Some(max)) => format!("{online}/{max}"),
+                    (Some(online), None) => online.to_string(),
+                    _ => "—".to_string(),
+                },
+                Style::default().fg(Color::Cyan),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("  Path:     ", label_style),
             Span::styled(path_display, Style::default().fg(Color::Cyan)),
         ]),
@@ -415,7 +457,9 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
             Span::styled("  Status:   ", label_style),
             Span::styled(
                 status_label,
-                Style::default().fg(status_color).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(status_color)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(""),
@@ -620,6 +664,17 @@ fn kb(key: &str, label: &str) -> Span<'static> {
     Span::raw(format!("[{}{}]", key.trim(), label))
 }
 
+fn total_users(app: &App) -> (u32, u32) {
+    app.servers
+        .iter()
+        .fold((0_u32, 0_u32), |(online, max), server| {
+            (
+                online.saturating_add(server.players_online.unwrap_or(0)),
+                max.saturating_add(server.players_max.unwrap_or(0)),
+            )
+        })
+}
+
 // ─── Install Modal ──────────────────────────────────────────────────────────
 
 fn render_install_modal(app: &App, frame: &mut Frame, area: Rect) {
@@ -627,12 +682,15 @@ fn render_install_modal(app: &App, frame: &mut Frame, area: Rect) {
     frame.render_widget(Clear, popup);
 
     let (step, path_input, name_input) = match &app.mode {
-        AppMode::Installing { step, path_input, name_input } => (step, path_input, name_input),
+        AppMode::Installing {
+            step,
+            path_input,
+            name_input,
+        } => (step, path_input, name_input),
         _ => return,
     };
 
     let block = Block::bordered()
-
         .title(" Install Plugin ")
         .title_style(
             Style::default()
@@ -640,14 +698,11 @@ fn render_install_modal(app: &App, frame: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         )
         .border_type(BorderType::Rounded)
-
         .border_style(Style::default().fg(Color::Yellow));
 
     let content = match step {
-
         InstallStep::Path => Text::from(vec![
             Line::from(""),
-
             Line::from(vec![
                 Span::styled("  Path: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(path_input.to_owned(), Style::default().fg(Color::White)),
@@ -655,18 +710,14 @@ fn render_install_modal(app: &App, frame: &mut Frame, area: Rect) {
                     "█",
                     Style::default()
                         .fg(Color::White)
-
                         .add_modifier(Modifier::SLOW_BLINK),
                 ),
             ]),
-
             Line::from(""),
             Line::from(Span::styled(
                 "  Supports: folder, .zip, .mcaddon",
-
                 Style::default().fg(Color::DarkGray),
             )),
-
         ]),
         InstallStep::Name => Text::from(vec![
             Line::from(""),
@@ -680,7 +731,6 @@ fn render_install_modal(app: &App, frame: &mut Frame, area: Rect) {
                 Span::styled(
                     "█",
                     Style::default()
-
                         .fg(Color::White)
                         .add_modifier(Modifier::SLOW_BLINK),
                 ),
@@ -692,7 +742,6 @@ fn render_install_modal(app: &App, frame: &mut Frame, area: Rect) {
             )),
         ]),
     };
-
 
     frame.render_widget(Paragraph::new(content).block(block), popup);
 }
@@ -913,16 +962,30 @@ fn render_send_command_modal(input: &str, frame: &mut Frame, area: Rect) {
 
     let block = Block::bordered()
         .title(" Send Command ")
-        .title_style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+        .title_style(
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Green));
 
     let content = Text::from(vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("  > ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  > ",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(input.to_owned(), Style::default().fg(Color::White)),
-            Span::styled("█", Style::default().fg(Color::White).add_modifier(Modifier::SLOW_BLINK)),
+            Span::styled(
+                "█",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::SLOW_BLINK),
+            ),
         ]),
         Line::from(""),
         Line::from(Span::styled(
@@ -953,7 +1016,11 @@ fn render_edit_config(
 ) {
     let block = Block::bordered()
         .title(" Edit server.properties ")
-        .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .title_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Cyan));
 
@@ -970,8 +1037,7 @@ fn render_edit_config(
         .split(inner);
         (chunks[0], Some(chunks[1]), chunks[2])
     } else {
-        let chunks =
-            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
+        let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
         (chunks[0], None, chunks[1])
     };
 
@@ -1006,12 +1072,14 @@ fn render_edit_config(
             .border_style(Style::default().fg(Color::Green));
         let edit_line = Line::from(vec![
             Span::styled(edit_input.to_owned(), Style::default().fg(Color::White)),
-            Span::styled("█", Style::default().fg(Color::White).add_modifier(Modifier::SLOW_BLINK)),
+            Span::styled(
+                "█",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::SLOW_BLINK),
+            ),
         ]);
-        frame.render_widget(
-            Paragraph::new(edit_line).block(edit_block),
-            edit_rect,
-        );
+        frame.render_widget(Paragraph::new(edit_line).block(edit_block), edit_rect);
     }
 
     // Compute scroll so selected row stays in view
@@ -1034,15 +1102,16 @@ fn render_edit_config(
         .take(visible)
         .map(|(i, (key, value))| {
             let is_sel = i == selected;
-            let key_span = Span::styled(
-                format!("  {key:<28}"),
-                Style::default().fg(Color::DarkGray),
-            );
+            let key_span =
+                Span::styled(format!("  {key:<28}"), Style::default().fg(Color::DarkGray));
             let eq_span = Span::styled(" = ", Style::default().fg(Color::DarkGray));
             let val_span = Span::styled(value.clone(), Style::default().fg(Color::White));
             let line = Line::from(vec![key_span, eq_span, val_span]);
             let style = if is_sel {
-                Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(Color::Blue)
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };

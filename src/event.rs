@@ -31,7 +31,6 @@ pub enum AppEvent {
 
 #[derive(Debug)]
 pub struct EventHandler {
-
     sender: mpsc::UnboundedSender<Event>,
     receiver: mpsc::UnboundedReceiver<Event>,
 }
@@ -45,11 +44,8 @@ impl EventHandler {
     }
 
     pub async fn next(&mut self) -> color_eyre::Result<Event> {
-
         self.receiver
-
             .recv()
-
             .await
             .ok_or_eyre("Event channel closed unexpectedly")
     }
@@ -57,7 +53,6 @@ impl EventHandler {
     pub fn send(&self, app_event: AppEvent) {
         let _ = self.sender.send(Event::App(app_event));
     }
-
 
     pub fn sender(&self) -> mpsc::UnboundedSender<Event> {
         self.sender.clone()
@@ -74,7 +69,6 @@ impl EventTask {
     }
 
     async fn run(self) -> color_eyre::Result<()> {
-
         let tick_rate = Duration::from_secs_f64(1.0 / TICK_FPS);
         let mut reader = crossterm::event::EventStream::new();
         let mut tick = tokio::time::interval(tick_rate);

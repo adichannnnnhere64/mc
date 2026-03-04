@@ -1,5 +1,5 @@
 pub mod app;
-pub mod connection;  
+pub mod connection;
 pub mod event;
 pub mod plugin;
 pub mod server;
