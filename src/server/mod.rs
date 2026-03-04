@@ -27,13 +27,36 @@ pub struct ServerInstance {
     pub cpu_percent: Option<f32>,
     pub players_online: Option<u32>,
     pub players_max: Option<u32>,
-    cpu_sample: Option<CpuSnapshot>,
+    pub cpu_sample: Option<CpuSnapshot>,
 }
 
 #[derive(Debug, Clone)]
-struct CpuSnapshot {
-    process_jiffies: u64,
-    total_jiffies: u64,
+pub struct CpuSnapshot {
+    pub process_jiffies: u64,
+    pub total_jiffies: u64,
+}
+
+/// Input for a background status refresh (send to spawn_blocking).
+#[derive(Debug, Clone)]
+pub struct StatusRefreshInput {
+    pub path: PathBuf,
+    pub server_type: ServerType,
+    pub port: Option<u16>,
+    pub container_name: Option<String>,
+    pub prev_cpu_sample: Option<CpuSnapshot>,
+}
+
+/// Output from a background status refresh.
+#[derive(Debug, Clone)]
+pub struct StatusUpdate {
+    pub path: PathBuf,
+    pub status: ServerStatus,
+    pub pid: Option<u32>,
+    pub ram_mb: Option<u64>,
+    pub cpu_percent: Option<f32>,
+    pub players_online: Option<u32>,
+    pub players_max: Option<u32>,
+    pub new_cpu_sample: Option<CpuSnapshot>,
 }
 
 #[derive(Debug, Clone)]
@@ -152,6 +175,17 @@ impl ServerInstance {
         self.players_max = players.map(|(_, max)| max);
     }
 
+    /// Apply a `StatusUpdate` returned from a background `compute_status_update` call.
+    pub fn apply_status_update(&mut self, update: StatusUpdate) {
+        self.status = update.status;
+        self.pid = update.pid;
+        self.ram_mb = update.ram_mb;
+        self.cpu_percent = update.cpu_percent;
+        self.players_online = update.players_online;
+        self.players_max = update.players_max;
+        self.cpu_sample = update.new_cpu_sample;
+    }
+
     pub fn from_path(path: &Path, custom_name: Option<&str>) -> Self {
         let name = custom_name
             .map(|s| s.to_string())
@@ -219,6 +253,65 @@ impl ServerInstance {
             players_max: players.map(|(_, max)| max),
             cpu_sample: None,
         }
+    }
+}
+
+/// Run all blocking I/O for a single server status check.
+/// Designed to be called inside `tokio::task::spawn_blocking`.
+pub fn compute_status_update(input: StatusRefreshInput) -> StatusUpdate {
+    let status = detect_server_status(&input.server_type, input.port, &input.path);
+
+    if !matches!(status, ServerStatus::Running) {
+        return StatusUpdate {
+            path: input.path,
+            status,
+            pid: None,
+            ram_mb: None,
+            cpu_percent: None,
+            players_online: None,
+            players_max: None,
+            new_cpu_sample: None,
+        };
+    }
+
+    let pid = if let Some(ref c) = input.container_name {
+        find_pid_for_container(c)
+    } else {
+        find_process_pid(&input.server_type)
+    };
+
+    let (ram_mb, cpu_percent, new_cpu_sample) =
+        if let Some(container) = input.container_name.as_deref() {
+            get_docker_stats(container)
+                .map(|(ram, cpu)| (Some(ram), Some(cpu), None))
+                .unwrap_or((None, None, None))
+        } else {
+            let ram = pid.and_then(get_process_ram_mb);
+            let new_sample = pid.and_then(read_cpu_snapshot);
+            let cpu = new_sample.as_ref().and_then(|curr| {
+                input
+                    .prev_cpu_sample
+                    .as_ref()
+                    .and_then(|prev| calc_cpu_percent(prev, curr))
+            });
+            (ram, cpu, new_sample)
+        };
+
+    let players = match input.server_type {
+        ServerType::Java => input.port.and_then(query_java_player_count),
+        ServerType::Bedrock => input.port.and_then(query_bedrock_player_count),
+        ServerType::Unknown => None,
+    };
+
+    StatusUpdate {
+        path: input.path,
+        status,
+        pid,
+        ram_mb,
+        cpu_percent,
+        players_online: players.map(|(online, _)| online),
+        players_max: players.map(|(_, max)| max),
+        new_cpu_sample,
     }
 }
 

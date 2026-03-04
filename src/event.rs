@@ -4,7 +4,7 @@ use futures::{FutureExt, StreamExt};
 use std::{path::PathBuf, time::Duration};
 use tokio::sync::mpsc;
 
-use crate::server::ServerInstance;
+use crate::server::{ServerInstance, StatusUpdate};
 
 const TICK_FPS: f64 = 30.0;
 
@@ -27,6 +27,8 @@ pub enum AppEvent {
     CommandSent(Result<String, String>),
     ServerRestarted(Result<String, String>),
     UpdateStatuses,
+    /// Results from a background per-server status refresh.
+    StatusesUpdated(Vec<StatusUpdate>),
 }
 
 #[derive(Debug)]

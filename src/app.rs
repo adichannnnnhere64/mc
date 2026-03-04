@@ -8,8 +8,9 @@ use crate::{
     connection::ConnectionConfig,
     event::{AppEvent, Event, EventHandler},
     server::{
-        ServerInstance, ServerStatus, discover_servers, read_docker_logs, read_server_properties,
-        restart_server, send_server_command, write_server_properties,
+        ServerInstance, ServerStatus, StatusRefreshInput, compute_status_update, discover_servers,
+        read_docker_logs, read_server_properties, restart_server, send_server_command,
+        write_server_properties,
     },
     ui,
 };
@@ -75,6 +76,8 @@ pub struct App {
     pub selected_connection: usize,
     pub log_lines: Vec<String>,
     pub tick_count: u64,
+    /// Guards against multiple concurrent status-refresh tasks.
+    status_refresh_pending: bool,
 }
 
 impl App {
@@ -115,6 +118,7 @@ impl App {
             selected_connection: 0,
             log_lines: Vec::new(),
             tick_count: 0,
+            status_refresh_pending: false,
         }
     }
 
@@ -198,9 +202,8 @@ impl App {
                 }
             }
             KeyCode::Char('r') => {
-                self.refresh_servers();
-
-                self.message = Some("Server list refreshed.".into());
+                self.run_auto_refresh();
+                self.message = Some("Refreshing…".into());
             }
             // Send command to running server
             KeyCode::Char('c') => {
@@ -377,8 +380,7 @@ impl App {
                             Ok(_) => {
                                 self.message = Some(format!("Added connection: {}", name));
                                 self.mode = AppMode::Normal;
-
-                                self.refresh_servers();
+                                self.run_auto_refresh();
                             }
                             Err(e) => {
                                 self.message = Some(format!("Error: {}", e));
@@ -471,7 +473,7 @@ impl App {
                         self.message = Some(format!("Error removing connection: {}", e));
                     } else {
                         self.message = Some(format!("Removed connection: {}", name));
-                        self.refresh_servers();
+                        self.run_auto_refresh();
                     }
                 }
                 self.mode = AppMode::ManageConnections;
@@ -807,7 +809,7 @@ impl App {
             }
         }
 
-        self.refresh_servers();
+        self.run_auto_refresh();
     }
 
     // --- End Manage Packs Methods ---
@@ -827,13 +829,21 @@ impl App {
             AppEvent::InstallDone(result) => match result {
                 Ok(msg) => {
                     self.message = Some(msg);
-                    self.refresh_servers();
+                    self.run_auto_refresh();
                 }
                 Err(err) => {
                     self.message = Some(format!("Install error: {err}"));
                 }
             },
-            AppEvent::UpdateStatuses => self.update_statuses(),
+            AppEvent::UpdateStatuses => self.run_update_statuses(),
+            AppEvent::StatusesUpdated(updates) => {
+                self.status_refresh_pending = false;
+                for update in updates {
+                    if let Some(server) = self.servers.iter_mut().find(|s| s.path == update.path) {
+                        server.apply_status_update(update);
+                    }
+                }
+            }
             AppEvent::LogsLoaded(lines) => {
                 self.log_lines = lines;
                 self.message = None;
@@ -858,11 +868,6 @@ impl App {
                 self.run_auto_refresh();
             }
         }
-    }
-
-    fn refresh_servers(&mut self) {
-        self.servers = discover_servers_with_connections(&self.connections, &self.servers_path);
-        self.selected = self.selected.min(self.servers.len().saturating_sub(1));
     }
 
     fn run_auto_refresh(&self) {
@@ -890,10 +895,42 @@ impl App {
         });
     }
 
-    fn update_statuses(&mut self) {
-        for server in &mut self.servers {
-            server.refresh_status();
+    /// Spawn one `spawn_blocking` task per server, all running concurrently.
+    /// Results come back as `AppEvent::StatusesUpdated` so the event loop is never blocked.
+    fn run_update_statuses(&mut self) {
+        if self.status_refresh_pending {
+            return;
         }
+        self.status_refresh_pending = true;
+
+        let inputs: Vec<StatusRefreshInput> = self
+            .servers
+            .iter()
+            .map(|s| StatusRefreshInput {
+                path: s.path.clone(),
+                server_type: s.server_type.clone(),
+                port: s.port,
+                container_name: s.container_name.clone(),
+                prev_cpu_sample: s.cpu_sample.clone(),
+            })
+            .collect();
+
+        let sender = self.events.sender();
+        tokio::spawn(async move {
+            // Spawn all servers in parallel on the blocking thread-pool.
+            let handles: Vec<_> = inputs
+                .into_iter()
+                .map(|input| tokio::task::spawn_blocking(move || compute_status_update(input)))
+                .collect();
+
+            let mut updates = Vec::with_capacity(handles.len());
+            for handle in handles {
+                if let Ok(update) = handle.await {
+                    updates.push(update);
+                }
+            }
+            let _ = sender.send(Event::App(AppEvent::StatusesUpdated(updates)));
+        });
     }
 
     fn run_install(&self, path: PathBuf, custom_name: Option<String>) {
