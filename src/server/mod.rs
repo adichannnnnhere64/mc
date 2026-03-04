@@ -21,6 +21,8 @@ pub struct ServerInstance {
     pub port: Option<u16>,
     pub server_type: ServerType,
     pub container_name: Option<String>,
+    pub pid: Option<u32>,
+    pub ram_mb: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +128,18 @@ impl ServerInstance {
             None
         };
 
+        let pid = if let Some(ref c) = container_name {
+            find_pid_for_container(c)
+        } else if matches!(status, ServerStatus::Running) {
+            find_process_pid(&server_type)
+        } else {
+            None
+        };
+
+        let ram_mb = pid
+            .and_then(get_process_ram_mb)
+            .or_else(|| container_name.as_deref().and_then(get_docker_ram_mb));
+
         ServerInstance {
             name,
             path: path.to_path_buf(),
@@ -139,6 +153,8 @@ impl ServerInstance {
 
             server_type,
             container_name,
+            pid,
+            ram_mb,
         }
     }
 }
@@ -339,6 +355,218 @@ pub fn read_docker_logs(container: &str, tail: usize) -> Vec<String> {
         Err(e) => vec![format!("docker logs error: {e}")],
     }
 }
+
+
+// ─── PID / RAM helpers ────────────────────────────────────────────────────────
+
+fn find_pid_for_container(container: &str) -> Option<u32> {
+    let out = Command::new("docker")
+        .args(["inspect", "--format", "{{.State.Pid}}", container])
+        .output()
+        .ok()?;
+    if out.status.success() {
+        String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+    } else {
+        None
+    }
+}
+
+fn find_process_pid(server_type: &ServerType) -> Option<u32> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let pattern = match server_type {
+            ServerType::Bedrock => "bedrock_server",
+            ServerType::Java => "java",
+            ServerType::Unknown => return None,
+        };
+        let out = Command::new("pgrep").args(["-f", pattern]).output().ok()?;
+        if out.status.success() {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            return stdout.lines().next()?.trim().parse().ok();
+        }
+    }
+    None
+}
+
+fn get_process_ram_mb(pid: u32) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+        for line in status.lines() {
+            if let Some(rest) = line.strip_prefix("VmRSS:") {
+                // "  12345 kB"
+                let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
+                return Some(kb / 1024);
+            }
+        }
+    }
+    None
+}
+
+fn get_docker_ram_mb(container: &str) -> Option<u64> {
+    let out = Command::new("docker")
+        .args([
+            "stats",
+            "--no-stream",
+            "--format",
+            "{{.MemUsage}}",
+            container,
+        ])
+        .output()
+        .ok()?;
+    if out.status.success() {
+        let s = String::from_utf8_lossy(&out.stdout);
+        parse_docker_mem(s.trim())
+    } else {
+        None
+    }
+}
+
+fn parse_docker_mem(s: &str) -> Option<u64> {
+    // Format: "123.4MiB / 1.938GiB"
+    let usage = s.split('/').next()?.trim();
+    if let Some(v) = usage.strip_suffix("GiB") {
+        return v.trim().parse::<f64>().ok().map(|x| (x * 1024.0) as u64);
+    }
+    if let Some(v) = usage.strip_suffix("MiB") {
+        return v.trim().parse::<f64>().ok().map(|x| x as u64);
+    }
+    if let Some(v) = usage.strip_suffix("KiB") {
+        return v.trim().parse::<f64>().ok().map(|x| (x / 1024.0) as u64);
+    }
+    if let Some(v) = usage.strip_suffix("GB") {
+        return v.trim().parse::<f64>().ok().map(|x| (x * 1000.0) as u64);
+    }
+    if let Some(v) = usage.strip_suffix("MB") {
+        return v.trim().parse::<f64>().ok().map(|x| x as u64);
+    }
+    None
+}
+
+// ─── Server control ───────────────────────────────────────────────────────────
+
+/// Send a command to a running server (Docker only for now).
+pub fn send_server_command(instance: &ServerInstance, cmd: &str) -> Result<String, String> {
+    if let Some(container) = &instance.container_name {
+        // itzg/minecraft-bedrock-server ships a `send-command` helper
+        let out = Command::new("docker")
+            .args(["exec", container.as_str(), "send-command", cmd])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if out.status.success() {
+            Ok(format!("Sent: {cmd}"))
+        } else {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            Err(if err.is_empty() {
+                format!("docker exec failed (exit {})", out.status)
+            } else {
+                err
+            })
+        }
+    } else {
+        Err("Command sending requires a Docker container. Non-Docker servers are not yet supported.".into())
+    }
+}
+
+/// Restart a server (Docker containers or native processes).
+pub fn restart_server(instance: &ServerInstance) -> Result<String, String> {
+    if let Some(container) = &instance.container_name {
+        let out = Command::new("docker")
+            .args(["restart", container.as_str()])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if out.status.success() {
+            Ok(format!("Restarted container '{container}'"))
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        }
+    } else if let Some(pid) = instance.pid {
+        // For native processes: send SIGTERM then let the process restart itself
+        // (works if the server is managed by a wrapper/service)
+        #[cfg(target_os = "linux")]
+        {
+            let out = Command::new("kill")
+                .args(["-SIGTERM", &pid.to_string()])
+                .output()
+                .map_err(|e| e.to_string())?;
+            if out.status.success() {
+                return Ok(format!("Sent SIGTERM to PID {pid}. Start the server manually if no auto-restart is configured."));
+            }
+        }
+        Err("Could not signal the server process.".into())
+    } else {
+        Err("No Docker container or running process found to restart.".into())
+    }
+}
+
+// ─── server.properties editor ─────────────────────────────────────────────────
+
+/// Read `server.properties` into editable key-value pairs (comments/blanks skipped).
+pub fn read_server_properties(server_path: &Path) -> Vec<(String, String)> {
+    let path = server_path.join("server.properties");
+    let Ok(content) = fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    content
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .filter_map(|l| {
+            let mut parts = l.splitn(2, '=');
+            let key = parts.next()?.trim().to_string();
+            let value = parts.next().unwrap_or("").trim().to_string();
+            Some((key, value))
+        })
+        .collect()
+}
+
+/// Write `server.properties` preserving comment lines from the original file.
+pub fn write_server_properties(
+    server_path: &Path,
+    props: &[(String, String)],
+) -> color_eyre::Result<()> {
+    let path = server_path.join("server.properties");
+    let original = fs::read_to_string(&path).unwrap_or_default();
+
+    // Build a lookup of new values
+    let new_vals: std::collections::HashMap<&str, &str> =
+        props.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+
+    let mut out = String::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for line in original.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            out.push_str(line);
+            out.push('\n');
+        } else if let Some(eq) = line.find('=') {
+            let key = line[..eq].trim();
+            seen.insert(key.to_string());
+            if let Some(val) = new_vals.get(key) {
+                out.push_str(&format!("{key}={val}\n"));
+            } else {
+                out.push_str(line);
+                out.push('\n');
+            }
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+
+    // Append any keys not present in the original
+    for (k, v) in props {
+        if !seen.contains(k.as_str()) {
+            out.push_str(&format!("{k}={v}\n"));
+        }
+    }
+
+    // Back up then write
+    let _ = fs::copy(&path, path.with_extension("properties.bak"));
+    fs::write(&path, out)?;
+    Ok(())
+}
+
+/// Detect if server process is running
 
 fn detect_server_process(server_path: &Path) -> ServerStatus {
     let server_name = server_path.file_name().unwrap_or_default().to_string_lossy();

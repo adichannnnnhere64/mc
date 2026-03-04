@@ -16,6 +16,9 @@ use crate::{
     server::{ServerStatus, ServerType},
 };
 
+const RAM_WARN_MB: u64 = 512;
+const RAM_HIGH_MB: u64 = 1024;
+
 pub fn render(app: &App, frame: &mut Frame) {
     let area = frame.area();
     let vertical = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
@@ -39,6 +42,9 @@ pub fn render(app: &App, frame: &mut Frame) {
         }
         AppMode::RemoveConnection { selected } => {
             render_remove_connection_modal(app, *selected, frame, area);
+        }
+        AppMode::SendCommand { input } => {
+            render_send_command_modal(input, frame, area);
         }
         _ => {}
     }
@@ -289,6 +295,10 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
         render_manage_packs(app, *selected, frame, area);
         return;
     }
+    if let AppMode::EditConfig { props, selected, editing, edit_input } = &app.mode {
+        render_edit_config(props, *selected, *editing, edit_input, frame, area);
+        return;
+    }
 
     let block = Block::bordered()
         .title(" Server Details ")
@@ -379,6 +389,25 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
             ),
         ]),
         Line::from(vec![
+            Span::styled("  PID:      ", label_style),
+            Span::styled(
+                server.pid.map_or("—".into(), |p| p.to_string()),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  RAM:      ", label_style),
+            Span::styled(
+                server.ram_mb.map_or("—".into(), |r| format!("{r} MB")),
+                Style::default().fg(match server.ram_mb {
+                    Some(r) if r >= RAM_HIGH_MB => Color::Red,
+                    Some(r) if r >= RAM_WARN_MB => Color::Yellow,
+                    Some(_) => Color::Green,
+                    None => Color::DarkGray,
+                }),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("  Path:     ", label_style),
             Span::styled(path_display, Style::default().fg(Color::Cyan)),
         ]),
@@ -386,9 +415,8 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
             Span::styled("  Status:   ", label_style),
             Span::styled(
                 status_label,
-                Style::default()
-                    .fg(status_color)
-                    .add_modifier(Modifier::BOLD),
+<<<<<<< HEAD
+                Style::default().fg(status_color).add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(""),
@@ -478,13 +506,19 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
             AppMode::Normal => Line::from(vec![
                 kb(" q ", "quit"),
                 Span::raw("  "),
-                kb(" ↑↓ ", "navigate"),
+                kb(" ↑↓ ", "nav"),
                 Span::raw("  "),
-                kb(" a ", "add conn"),
+                kb(" a ", "add"),
                 Span::raw("  "),
                 kb(" m ", "manage"),
                 Span::raw("  "),
                 kb(" i ", "install"),
+                Span::raw("  "),
+                kb(" c ", "cmd"),
+                Span::raw("  "),
+                kb(" R ", "restart"),
+                Span::raw("  "),
+                kb(" e ", "config"),
                 Span::raw("  "),
                 kb(" p ", "packs"),
                 Span::raw("  "),
@@ -550,6 +584,30 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
                 Span::raw("  "),
                 kb(" Esc ", "back"),
             ]),
+            AppMode::SendCommand { .. } => Line::from(vec![
+                kb(" Enter ", "send"),
+                Span::raw("  "),
+                kb(" Esc ", "cancel"),
+            ]),
+            AppMode::EditConfig { editing, .. } => {
+                if *editing {
+                    Line::from(vec![
+                        kb(" Enter ", "confirm"),
+                        Span::raw("  "),
+                        kb(" Esc ", "cancel edit"),
+                    ])
+                } else {
+                    Line::from(vec![
+                        kb(" ↑↓ ", "navigate"),
+                        Span::raw("  "),
+                        kb(" Enter ", "edit value"),
+                        Span::raw("  "),
+                        kb(" s ", "save"),
+                        Span::raw("  "),
+                        kb(" Esc ", "back"),
+                    ])
+                }
+            }
         }
     };
 
@@ -846,6 +904,154 @@ fn render_remove_connection_modal(app: &App, selected: usize, frame: &mut Frame,
     ]);
 
     frame.render_widget(Paragraph::new(content).block(block), popup);
+}
+
+// ─── Send Command Modal ──────────────────────────────────────────────────────
+
+fn render_send_command_modal(input: &str, frame: &mut Frame, area: Rect) {
+    let popup = centered_rect(62, 30, area);
+    frame.render_widget(Clear, popup);
+
+    let block = Block::bordered()
+        .title(" Send Command ")
+        .title_style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Green));
+
+    let content = Text::from(vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  > ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(input.to_owned(), Style::default().fg(Color::White)),
+            Span::styled("█", Style::default().fg(Color::White).add_modifier(Modifier::SLOW_BLINK)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  e.g.  say Hello   op PlayerName   gamemode creative",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Enter", Style::default().fg(Color::Green)),
+            Span::styled(" send   ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Esc", Style::default().fg(Color::Red)),
+            Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+        ]),
+    ]);
+
+    frame.render_widget(Paragraph::new(content).block(block), popup);
+}
+
+// ─── Edit Config Panel ───────────────────────────────────────────────────────
+
+fn render_edit_config(
+    props: &[(String, String)],
+    selected: usize,
+    editing: bool,
+    edit_input: &str,
+    frame: &mut Frame,
+    area: Rect,
+) {
+    let block = Block::bordered()
+        .title(" Edit server.properties ")
+        .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Layout: hint row, optional edit box, list
+    let (hint_area, edit_area, list_area) = if editing {
+        let chunks = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Min(0),
+        ])
+        .split(inner);
+        (chunks[0], Some(chunks[1]), chunks[2])
+    } else {
+        let chunks =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
+        (chunks[0], None, chunks[1])
+    };
+
+    // Hint line
+    let hint = if editing {
+        Line::from(vec![
+            Span::styled(" Enter", Style::default().fg(Color::Green)),
+            Span::raw(" confirm  "),
+            Span::styled("Esc", Style::default().fg(Color::Red)),
+            Span::raw(" cancel"),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(" ↑↓", Style::default().fg(Color::Cyan)),
+            Span::raw(" navigate  "),
+            Span::styled("Enter", Style::default().fg(Color::Cyan)),
+            Span::raw(" edit  "),
+            Span::styled("s", Style::default().fg(Color::Green)),
+            Span::raw(" save  "),
+            Span::styled("Esc", Style::default().fg(Color::Red)),
+            Span::raw(" back"),
+        ])
+    };
+    frame.render_widget(Paragraph::new(hint), hint_area);
+
+    // Inline edit box for current value
+    if let Some(edit_rect) = edit_area {
+        let key_name = props.get(selected).map(|(k, _)| k.as_str()).unwrap_or("");
+        let edit_block = Block::bordered()
+            .title(format!(" {key_name} "))
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Green));
+        let edit_line = Line::from(vec![
+            Span::styled(edit_input.to_owned(), Style::default().fg(Color::White)),
+            Span::styled("█", Style::default().fg(Color::White).add_modifier(Modifier::SLOW_BLINK)),
+        ]);
+        frame.render_widget(
+            Paragraph::new(edit_line).block(edit_block),
+            edit_rect,
+        );
+    }
+
+    // Compute scroll so selected row stays in view
+    let visible = list_area.height as usize;
+    let scroll = if visible == 0 || props.is_empty() {
+        0
+    } else {
+        let half = visible / 2;
+        if selected < half {
+            0
+        } else {
+            (selected - half).min(props.len().saturating_sub(visible))
+        }
+    };
+
+    let items: Vec<ListItem> = props
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible)
+        .map(|(i, (key, value))| {
+            let is_sel = i == selected;
+            let key_span = Span::styled(
+                format!("  {key:<28}"),
+                Style::default().fg(Color::DarkGray),
+            );
+            let eq_span = Span::styled(" = ", Style::default().fg(Color::DarkGray));
+            let val_span = Span::styled(value.clone(), Style::default().fg(Color::White));
+            let line = Line::from(vec![key_span, eq_span, val_span]);
+            let style = if is_sel {
+                Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(line).style(style)
+        })
+        .collect();
+
+    frame.render_widget(List::new(items), list_area);
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

@@ -7,7 +7,10 @@ use ratatui::DefaultTerminal;
 use crate::{
     connection::ConnectionConfig,
     event::{AppEvent, Event, EventHandler},
-    server::{ServerInstance, discover_servers, read_docker_logs},
+    server::{
+        discover_servers, read_docker_logs, read_server_properties, restart_server,
+        send_server_command, write_server_properties, ServerInstance, ServerStatus,
+    },
     ui,
 };
 
@@ -31,14 +34,17 @@ pub enum AppMode {
         step: ConnectionStep,
     },
     ManageConnections,
-    RemoveConnection {
+    RemoveConnection { selected: usize },
+    ViewLogs { scroll: usize },
+    ManagePacks { selected: usize },
+    /// Modal to type and send a command to the selected server.
+    SendCommand { input: String },
+    /// In-panel editor for server.properties.
+    EditConfig {
+        props: Vec<(String, String)>,
         selected: usize,
-    },
-    ViewLogs {
-        scroll: usize,
-    },
-    ManagePacks {
-        selected: usize,
+        editing: bool,
+        edit_input: String,
     },
 }
 
@@ -60,6 +66,7 @@ pub struct App {
     pub connections: ConnectionConfig,
     pub selected_connection: usize,
     pub log_lines: Vec<String>,
+    pub tick_count: u64,
 }
 
 impl App {
@@ -99,6 +106,7 @@ impl App {
             connections,
             selected_connection: 0,
             log_lines: Vec::new(),
+            tick_count: 0,
         }
     }
 
@@ -106,8 +114,13 @@ impl App {
         while self.running {
             terminal.draw(|frame| ui::render(&self, frame))?;
             match self.events.next().await? {
-                Event::Tick => {}
-
+                Event::Tick => {
+                    self.tick_count = self.tick_count.wrapping_add(1);
+                    // Auto-refresh server statuses every ~2 seconds (60 ticks at 30 fps)
+                    if self.tick_count % 60 == 0 {
+                        self.run_auto_refresh();
+                    }
+                }
                 Event::Crossterm(event) => {
                     if let crossterm::event::Event::Key(key) = event {
                         if key.kind == crossterm::event::KeyEventKind::Press {
@@ -130,6 +143,8 @@ impl App {
             AppMode::RemoveConnection { .. } => self.handle_remove_connection_key(key),
             AppMode::ViewLogs { .. } => self.handle_view_logs_key(key),
             AppMode::ManagePacks { .. } => self.handle_manage_packs_key(key),
+            AppMode::SendCommand { .. } => self.handle_send_command_key(key),
+            AppMode::EditConfig { .. } => self.handle_edit_config_key(key),
         }
         Ok(())
     }
@@ -177,6 +192,49 @@ impl App {
                 self.refresh_servers();
 
                 self.message = Some("Server list refreshed.".into());
+            }
+            // Send command to running server
+            KeyCode::Char('c') => {
+                if self.servers.is_empty() {
+                    return;
+                }
+                if matches!(self.servers[self.selected].status, ServerStatus::Running) {
+                    self.mode = AppMode::SendCommand { input: String::new() };
+                } else {
+                    self.message = Some("Server is not running.".into());
+                }
+            }
+            // Restart server (capital R = Shift+r)
+            KeyCode::Char('R') => {
+                if self.servers.is_empty() {
+                    return;
+                }
+                let instance = self.servers[self.selected].clone();
+                let sender = self.events.sender();
+                tokio::spawn(async move {
+                    let result = tokio::task::spawn_blocking(move || restart_server(&instance))
+                        .await
+                        .unwrap_or_else(|e| Err(e.to_string()));
+                    let _ = sender.send(Event::App(AppEvent::ServerRestarted(result)));
+                });
+                self.message = Some("Restarting…".into());
+            }
+            // Edit server.properties
+            KeyCode::Char('e') => {
+                if self.servers.is_empty() {
+                    return;
+                }
+                let props = read_server_properties(&self.servers[self.selected].path);
+                if props.is_empty() {
+                    self.message = Some("No server.properties found.".into());
+                } else {
+                    self.mode = AppMode::EditConfig {
+                        props,
+                        selected: 0,
+                        editing: false,
+                        edit_input: String::new(),
+                    };
+                }
             }
             KeyCode::Char('l') => {
                 if self.servers.is_empty() {
@@ -499,7 +557,130 @@ impl App {
         }
     }
 
-    fn toggle_pack(&mut self, visual_idx: usize) {
+    fn handle_send_command_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Enter => {
+                let input = match &self.mode {
+                    AppMode::SendCommand { input } => input.clone(),
+                    _ => return,
+                };
+                self.mode = AppMode::Normal;
+                if input.trim().is_empty() {
+                    return;
+                }
+                let instance = self.servers[self.selected].clone();
+                let sender = self.events.sender();
+                tokio::spawn(async move {
+                    let result =
+                        tokio::task::spawn_blocking(move || send_server_command(&instance, &input))
+                            .await
+                            .unwrap_or_else(|e| Err(e.to_string()));
+                    let _ = sender.send(Event::App(AppEvent::CommandSent(result)));
+                });
+                self.message = Some("Sending command…".into());
+            }
+            KeyCode::Backspace => {
+                if let AppMode::SendCommand { input } = &mut self.mode {
+                    input.pop();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let AppMode::SendCommand { input } = &mut self.mode {
+                    input.push(c);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_edit_config_key(&mut self, key: KeyEvent) {
+        let (props_len, is_editing) = match &self.mode {
+            AppMode::EditConfig { props, editing, .. } => (props.len(), *editing),
+            _ => return,
+        };
+
+        if is_editing {
+            match key.code {
+                KeyCode::Esc => {
+                    if let AppMode::EditConfig { editing, edit_input, .. } = &mut self.mode {
+                        *editing = false;
+                        edit_input.clear();
+                    }
+                }
+                KeyCode::Enter => {
+                    if let AppMode::EditConfig { props, selected, editing, edit_input } =
+                        &mut self.mode
+                    {
+                        let new_val = edit_input.clone();
+                        props[*selected].1 = new_val;
+                        *editing = false;
+                        edit_input.clear();
+                    }
+                }
+                KeyCode::Backspace => {
+                    if let AppMode::EditConfig { edit_input, .. } = &mut self.mode {
+                        edit_input.pop();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if let AppMode::EditConfig { edit_input, .. } = &mut self.mode {
+                        edit_input.push(c);
+                    }
+                }
+                _ => {}
+            }
+        } else {
+            match key.code {
+                KeyCode::Esc => {
+                    self.mode = AppMode::Normal;
+                }
+                KeyCode::Up => {
+                    if let AppMode::EditConfig { selected, .. } = &mut self.mode {
+                        *selected = selected.saturating_sub(1);
+                    }
+                }
+                KeyCode::Down => {
+                    if let AppMode::EditConfig { selected, .. } = &mut self.mode {
+                        if *selected + 1 < props_len {
+                            *selected += 1;
+                        }
+                    }
+                }
+                KeyCode::Enter => {
+                    if let AppMode::EditConfig { props, selected, editing, edit_input } =
+                        &mut self.mode
+                    {
+                        *edit_input = props[*selected].1.clone();
+                        *editing = true;
+                    }
+                }
+                KeyCode::Char('s') => {
+                    let (props, server_path) = match &self.mode {
+                        AppMode::EditConfig { props, .. } => {
+                            (props.clone(), self.servers[self.selected].path.clone())
+                        }
+                        _ => return,
+                    };
+                    match write_server_properties(&server_path, &props) {
+                        Ok(()) => {
+                            self.message = Some("Config saved.".into());
+                            self.mode = AppMode::Normal;
+                        }
+                        Err(e) => {
+                            self.message = Some(format!("Save error: {e}"));
+                            self.mode = AppMode::Normal;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn toggle_pack(&mut self, selected: usize) {
         if self.servers.is_empty() {
             return;
         }
@@ -515,13 +696,13 @@ impl App {
 
         // Resource packs
         if rp_len == 0 {
-            if visual_idx == current {
+            if selected == current {
                 return; // "(none installed)" line – do nothing
             }
             current += 1;
         } else {
             for i in 0..rp_len {
-                if visual_idx == current {
+                if selected == current {
                     self.toggle_pack_by_index(true, i);
 
                     return;
@@ -532,26 +713,26 @@ impl App {
 
         // Empty line separator
 
-        if visual_idx == current {
+        if selected == current {
             return;
         }
         current += 1;
 
         // Behavior header
-        if visual_idx == current {
+        if selected == current {
             return;
         }
         current += 1;
 
         // Behavior packs
         if bp_len == 0 {
-            if visual_idx == current {
+            if selected == current {
                 return; // "(none installed)" line
             }
             // current += 1; // not needed
         } else {
             for i in 0..bp_len {
-                if visual_idx == current {
+                if selected == current {
                     self.toggle_pack_by_index(false, i);
 
                     return;
@@ -635,7 +816,22 @@ impl App {
                     *scroll = self.log_lines.len().saturating_sub(1);
                 }
             }
-            AppEvent::UpdateStatuses => self.update_statuses(),
+            AppEvent::ServersRefreshed(servers) => {
+                self.servers = servers;
+                self.selected = self.selected.min(self.servers.len().saturating_sub(1));
+            }
+            AppEvent::CommandSent(result) => match result {
+                Ok(msg) => self.message = Some(msg),
+                Err(err) => self.message = Some(format!("Command error: {err}")),
+            },
+            AppEvent::ServerRestarted(result) => {
+                match result {
+                    Ok(msg) => self.message = Some(msg),
+                    Err(err) => self.message = Some(format!("Restart error: {err}")),
+                }
+                // Refresh after a restart attempt
+                self.run_auto_refresh();
+            }
         }
     }
 
@@ -644,11 +840,21 @@ impl App {
         self.selected = self.selected.min(self.servers.len().saturating_sub(1));
     }
 
-    fn update_statuses(&mut self) {
-        for server in &mut self.servers {
-            server.refresh_status();
-        }
+    fn run_auto_refresh(&self) {
+        let connections = self.connections.clone();
+        let servers_path = self.servers_path.clone();
+        let sender = self.events.sender();
+        tokio::spawn(async move {
+            let servers = tokio::task::spawn_blocking(move || {
+                discover_servers_with_connections(&connections, &servers_path)
+            })
+            .await
+            .unwrap_or_default();
+            let _ = sender.send(Event::App(AppEvent::ServersRefreshed(servers)));
+        });
     }
+
+
 
     fn run_load_logs(&self, container: String) {
         let sender = self.events.sender();

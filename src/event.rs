@@ -4,6 +4,8 @@ use futures::{FutureExt, StreamExt};
 use std::{path::PathBuf, time::Duration};
 use tokio::sync::mpsc;
 
+use crate::server::ServerInstance;
+
 const TICK_FPS: f64 = 30.0;
 
 #[derive(Clone, Debug)]
@@ -21,8 +23,9 @@ pub enum AppEvent {
     InstallPlugin(PathBuf, Option<String>), // path, optional custom name
     InstallDone(Result<String, String>),
     LogsLoaded(Vec<String>),
-    // NEW: Periodic status update trigger
-    UpdateStatuses,
+    ServersRefreshed(Vec<ServerInstance>),
+    CommandSent(Result<String, String>),
+    ServerRestarted(Result<String, String>),
 }
 
 #[derive(Debug)]
