@@ -487,7 +487,7 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
     lines.push(Line::from(""));
 
     lines.push(Line::from(Span::styled(
-        format!("  Behavior Packs ({}):", server.behavior_packs.len()),
+        format!("  Behavior Packsed ({}):", server.behavior_packs.len()),
         Style::default().fg(Color::Magenta),
     )));
 

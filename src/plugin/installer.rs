@@ -4,6 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use serde_json::Value;
+
 use super::{
     extractor::extract_zip,
     manifest::{Manifest, PackType},
@@ -17,39 +19,49 @@ pub struct InstallResult {
 
 /// Install all packs found in `source_path` into the server at `server_path`.
 /// A single archive may contain both a BP and RP — both are installed.
-
 pub fn install(
     source_path: &Path,
     server_path: &Path,
     custom_name: Option<String>,
 ) -> color_eyre::Result<Vec<InstallResult>> {
-    let manifest_dir = if source_path.is_dir() {
-        source_path.to_path_buf()
+    let tmp = server_path.join(".tmp_install");
+    if tmp.exists() {
+        fs::remove_dir_all(&tmp)?;
+    }
+
+    if source_path.is_dir() {
+        // Copy the folder so nested archives can be expanded without modifying source.
+        copy_dir_all(source_path, &tmp)
+            .map_err(|e| color_eyre::eyre::eyre!("Copy failed: {e}"))?;
+        super::extractor::expand_nested_archives(&tmp)
+            .map_err(|e| color_eyre::eyre::eyre!("Extraction failed: {e}"))?;
     } else {
-        let tmp = server_path.join(".tmp_install");
-        if tmp.exists() {
-            fs::remove_dir_all(&tmp)?;
-        }
         extract_zip(source_path, &tmp)
             .map_err(|e| color_eyre::eyre::eyre!("Extraction failed: {e}"))?;
-        tmp
-    };
+    }
+
+    let manifest_dir = tmp;
 
     let manifest_paths = find_all_manifests(&manifest_dir);
     if manifest_paths.is_empty() {
+        let sample = sample_extracted_files(&manifest_dir, 20);
+        let detail = if sample.is_empty() {
+            "archive extracted but produced no files".to_string()
+        } else {
+            format!("extracted files include: {}", sample.join(", "))
+        };
         cleanup_tmp(server_path);
 
-        return Err(color_eyre::eyre::eyre!("No manifest.json found in archive"));
+        return Err(color_eyre::eyre::eyre!(
+            "No manifest.json found in archive ({detail})"
+        ));
     }
 
     let mut results = Vec::new();
     let mut errors = Vec::new();
 
     for manifest_path in &manifest_paths {
-        // If there's a custom name and it's the only pack, apply it to all manifests? Or first one?
-        // We'll apply custom name to all manifests for simplicity, but user might expect it only for the first.
-        // Better: if multiple manifests, we could ask? But for now, apply to all.
-        let custom = custom_name.clone(); // clone for each
+        let custom = custom_name.clone();
         match install_single(manifest_path, server_path, custom) {
             Ok(r) => results.push(r),
             Err(e) => errors.push(e.to_string()),
@@ -71,15 +83,18 @@ fn install_single(
     custom_name: Option<String>,
 ) -> color_eyre::Result<InstallResult> {
     let manifest_content = fs::read_to_string(manifest_path)?;
-    let mut manifest: Manifest = serde_json::from_str(&manifest_content)
+    let mut manifest_value: Value = serde_json::from_str(&manifest_content)
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to parse manifest.json: {e}"))?;
+    let mut manifest: Manifest = serde_json::from_value(manifest_value.clone())
         .map_err(|e| color_eyre::eyre::eyre!("Failed to parse manifest.json: {e}"))?;
 
-    // Apply custom name if provided
+    // Apply custom name while preserving unknown manifest fields.
     if let Some(name) = custom_name {
+        if let Some(header) = manifest_value.get_mut("header").and_then(Value::as_object_mut) {
+            header.insert("name".to_string(), Value::String(name.clone()));
+        }
         manifest.header.name = Some(name);
-
-        // Write back the modified manifest
-        let modified_content = serde_json::to_string_pretty(&manifest)?;
+        let modified_content = serde_json::to_string_pretty(&manifest_value)?;
         fs::write(manifest_path, modified_content)?;
     }
 
@@ -90,10 +105,9 @@ fn install_single(
         .clone()
         .unwrap_or_else(|| manifest.header.uuid.clone());
 
-    let (target_subdir, json_file) = match &pack_type {
-        PackType::Resources => ("resource_packs", "resource_packs.json"),
-        PackType::Behavior => ("behavior_packs", "behavior_packs.json"),
-
+    let (pack_subdir, world_json_file) = match &pack_type {
+        PackType::Resources => ("resource_packs", "world_resource_packs.json"),
+        PackType::Behavior => ("behavior_packs", "world_behavior_packs.json"),
         PackType::Unknown => {
             return Err(color_eyre::eyre::eyre!(
                 "Unknown pack type in {}",
@@ -102,30 +116,33 @@ fn install_single(
         }
     };
 
-    let pack_root = manifest_path.parent().expect("manifest has parent dir");
+    let pack_root = manifest_path.parent().ok_or_else(|| {
+        color_eyre::eyre::eyre!("Invalid manifest path: {}", manifest_path.display())
+    })?;
 
-    let pack_dest = server_path.join(target_subdir).join(&manifest.header.uuid);
+    // Install pack files and update JSON for the primary world and any others.
+    let world_dirs = collect_world_dirs(server_path);
+    for world_dir in &world_dirs {
+        let pack_dest = world_dir.join(pack_subdir).join(&manifest.header.uuid);
+        if pack_dest.exists() {
+            fs::remove_dir_all(&pack_dest)?;
+        }
+        copy_dir_all(pack_root, &pack_dest)?;
 
-    copy_dir_all(pack_root, &pack_dest)?;
+        // Ensure destination has a canonical lowercase manifest filename.
+        fs::write(
+            pack_dest.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest_value)?,
+        )?;
 
-    let json_path = server_path.join(json_file);
-    update_pack_list(&json_path, &manifest.header.uuid, &manifest.header.version)?;
+        validate_installed_manifest(
+            &pack_dest.join("manifest.json"),
+            &manifest.header.uuid,
+            &manifest.header.version,
+        )?;
 
-    // Also update the world-level pack list so players actually receive the pack.
-    // Bedrock reads world_resource_packs.json / world_behavior_packs.json from the
-    // active world directory; the server-root JSONs only track what's installed.
-    let world_json_file = match &pack_type {
-        PackType::Resources => "world_resource_packs.json",
-        PackType::Behavior => "world_behavior_packs.json",
-        PackType::Unknown => unreachable!(),
-    };
-    if let Some(world_name) = read_level_name(server_path) {
-        let world_json = server_path
-            .join("worlds")
-            .join(&world_name)
-            .join(world_json_file);
-        // Best-effort: don't fail the whole install if the world dir doesn't exist yet
-        let _ = update_pack_list(&world_json, &manifest.header.uuid, &manifest.header.version);
+        let json_path = world_dir.join(world_json_file);
+        update_pack_list(&json_path, &manifest.header.uuid, &manifest.header.version)?;
     }
 
     Ok(InstallResult {
@@ -134,36 +151,55 @@ fn install_single(
     })
 }
 
-/// Enable or disable a pack by updating its JSON list file.
-/// `should_enable = true` adds the pack; `false` removes it.
+/// Enable or disable a pack across all world directories.
 pub fn set_pack_enabled(
+    server_path: &Path,
+    uuid: &str,
+    version: &[u32],
+    is_resource: bool,
+    should_enable: bool,
+) -> color_eyre::Result<()> {
+    let world_json_file = if is_resource {
+        "world_resource_packs.json"
+    } else {
+        "world_behavior_packs.json"
+    };
+    for world_dir in collect_world_dirs(server_path) {
+        set_pack_enabled_in_file(&world_dir.join(world_json_file), uuid, version, should_enable)?;
+    }
+    Ok(())
+}
+
+fn set_pack_enabled_in_file(
     json_path: &Path,
+
     uuid: &str,
     version: &[u32],
     should_enable: bool,
 ) -> color_eyre::Result<()> {
     let mut entries: Vec<PackEntry> = if json_path.exists() {
         let content = fs::read_to_string(json_path)?;
-        serde_json::from_str(&content).unwrap_or_default()
+        serde_json::from_str(&content)
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to parse {}: {e}", json_path.display()))?
     } else {
         Vec::new()
     };
 
+    let old = entries.clone();
+
     if should_enable {
-        if !entries.iter().any(|e| e.pack_id == uuid) {
-            entries.push(PackEntry {
-                pack_id: uuid.to_string(),
-                version: version.to_vec(),
-            });
-        }
+        upsert_pack_entry(&mut entries, uuid, version);
     } else {
         entries.retain(|e| e.pack_id != uuid);
     }
 
-    if let Some(parent) = json_path.parent() {
-        fs::create_dir_all(parent)?;
+    if entries != old {
+        if let Some(parent) = json_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        fs::write(json_path, serde_json::to_string_pretty(&entries)?)?;
     }
-    fs::write(json_path, serde_json::to_string_pretty(&entries)?)?;
     Ok(())
 }
 
@@ -178,13 +214,49 @@ fn collect_manifests(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
+
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
             collect_manifests(&path, out);
-        } else if path.file_name().is_some_and(|n| n == "manifest.json") {
+        } else if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.eq_ignore_ascii_case("manifest.json"))
+        {
             out.push(path);
         }
+    }
+}
+
+fn sample_extracted_files(dir: &Path, limit: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_file_sample(dir, dir, limit, &mut out);
+    out
+}
+
+fn collect_file_sample(root: &Path, dir: &Path, limit: usize, out: &mut Vec<String>) {
+    if out.len() >= limit {
+        return;
+    }
+
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        if out.len() >= limit {
+            break;
+        }
+
+        let path = entry.path();
+        if path.is_dir() {
+            collect_file_sample(root, &path, limit, out);
+            continue;
+        }
+
+        let rel = path.strip_prefix(root).unwrap_or(&path);
+        out.push(rel.display().to_string());
     }
 }
 
@@ -202,30 +274,36 @@ fn copy_dir_all(src: &Path, dst: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Read, deduplicate, and write `resource_packs.json` / `behavior_packs.json`.
+/// Read, deduplicate, and write pack list JSON files.
 fn update_pack_list(json_path: &Path, uuid: &str, version: &[u32]) -> color_eyre::Result<()> {
-    if json_path.exists() {
-        let mut bak_name: OsString = json_path
-            .file_name()
-            .expect("json_path has filename")
-            .to_os_string();
-        bak_name.push(".bak");
-        let bak_path = json_path.with_file_name(bak_name);
-        fs::copy(json_path, bak_path)?;
-    }
-
     let mut entries: Vec<PackEntry> = if json_path.exists() {
         let content = fs::read_to_string(json_path)?;
-        serde_json::from_str(&content).unwrap_or_default()
+
+        serde_json::from_str(&content)
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to parse {}: {e}", json_path.display()))?
     } else {
         Vec::new()
     };
 
-    if !entries.iter().any(|e| e.pack_id == uuid) {
-        entries.push(PackEntry {
-            pack_id: uuid.to_string(),
-            version: version.to_vec(),
-        });
+    let old = entries.clone();
+    upsert_pack_entry(&mut entries, uuid, version);
+    deduplicate_entries(&mut entries);
+
+    if entries != old {
+        // Backup existing file
+        if json_path.exists() {
+            let Some(file_name) = json_path.file_name() else {
+                return Err(color_eyre::eyre::eyre!(
+                    "Invalid pack list path (missing filename): {}",
+                    json_path.display()
+                ));
+            };
+            let mut bak_name: OsString = file_name.to_os_string();
+            bak_name.push(".bak");
+            let bak_path = json_path.with_file_name(bak_name);
+            fs::copy(json_path, bak_path)?;
+        }
+
         if let Some(parent) = json_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -253,6 +331,82 @@ fn read_level_name(server_path: &Path) -> Option<String> {
             }
         }
     }
-    // Bedrock default world name
     Some("Bedrock level".to_string())
+}
+
+/// Return all world directories under `server_path/worlds/`, ensuring the
+/// primary world (from `level-name` in server.properties) always exists.
+fn collect_world_dirs(server_path: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let worlds_root = detect_worlds_root(server_path);
+
+    // Primary world — create it if it doesn't exist yet.
+    let primary = worlds_root
+        .join(read_level_name(server_path).unwrap_or_else(|| "Bedrock level".to_string()));
+    let _ = fs::create_dir_all(&primary);
+    dirs.push(primary.clone());
+
+    // Any additional world directories that already exist.
+    if let Ok(entries) = fs::read_dir(&worlds_root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() && path != primary {
+                dirs.push(path);
+            }
+        }
+    }
+
+    dirs
+}
+
+fn detect_worlds_root(server_path: &Path) -> PathBuf {
+    let direct = server_path.join("worlds");
+    if direct.exists() {
+        return direct;
+    }
+    let data_worlds = server_path.join("data").join("worlds");
+    if data_worlds.exists() {
+        return data_worlds;
+    }
+    direct
+}
+
+fn validate_installed_manifest(
+    manifest_path: &Path,
+    expected_uuid: &str,
+    expected_version: &[u32],
+) -> color_eyre::Result<()> {
+    let content = fs::read_to_string(manifest_path)?;
+    let parsed: Manifest = serde_json::from_str(&content)
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to parse {}: {e}", manifest_path.display()))?;
+    if parsed.header.uuid != expected_uuid || parsed.header.version != expected_version {
+        return Err(color_eyre::eyre::eyre!(
+            "Installed manifest mismatch at {}",
+            manifest_path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn upsert_pack_entry(entries: &mut Vec<PackEntry>, uuid: &str, version: &[u32]) {
+    if let Some(entry) = entries.iter_mut().find(|e| e.pack_id == uuid) {
+        entry.version = version.to_vec();
+    } else {
+        entries.push(PackEntry {
+            pack_id: uuid.to_string(),
+            version: version.to_vec(),
+        });
+    }
+}
+
+fn deduplicate_entries(entries: &mut Vec<PackEntry>) {
+    let mut deduped: Vec<PackEntry> = Vec::with_capacity(entries.len());
+    for entry in entries.drain(..) {
+        if let Some(existing) = deduped.iter_mut().find(|e| e.pack_id == entry.pack_id) {
+            existing.version = entry.version;
+        } else {
+            deduped.push(entry);
+        }
+    }
+    *entries = deduped;
 }

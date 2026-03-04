@@ -103,7 +103,7 @@ impl ServerStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 
 pub struct PackEntry {
     pub pack_id: String,
@@ -192,13 +192,18 @@ impl ServerInstance {
             .or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()))
             .unwrap_or_else(|| "Unknown".to_string());
 
-        let resource_packs = load_pack_list(&path.join("resource_packs.json"));
-        let behavior_packs = load_pack_list(&path.join("behavior_packs.json"));
+        let worlds_root = detect_worlds_root(path);
+        let world_dir = read_level_name(&path)
+            .map(|n| worlds_root.join(n))
+            .unwrap_or_else(|| worlds_root.join("Bedrock level"));
+
+        let resource_packs = load_pack_list(&world_dir.join("world_resource_packs.json"));
+        let behavior_packs = load_pack_list(&world_dir.join("world_behavior_packs.json"));
 
         let installed_resource_packs =
-            discover_installed_packs(&path.join("resource_packs"), &resource_packs);
+            discover_installed_packs(&world_dir.join("resource_packs"), &resource_packs);
         let installed_behavior_packs =
-            discover_installed_packs(&path.join("behavior_packs"), &behavior_packs);
+            discover_installed_packs(&world_dir.join("behavior_packs"), &behavior_packs);
 
         let (server_type, port) = detect_server_config(path);
         // Use the new helper for status detection
@@ -394,6 +399,31 @@ fn detect_server_config(server_path: &Path) -> (ServerType, Option<u16>) {
     }
 
     (ServerType::Unknown, None)
+}
+
+fn read_level_name(server_path: &Path) -> Option<String> {
+    let content = fs::read_to_string(server_path.join("server.properties")).ok()?;
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("level-name=") {
+            let name = rest.trim().to_string();
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
+fn detect_worlds_root(server_path: &Path) -> PathBuf {
+    let direct = server_path.join("worlds");
+    if direct.exists() {
+        return direct;
+    }
+    let data_worlds = server_path.join("data").join("worlds");
+    if data_worlds.exists() {
+        return data_worlds;
+    }
+    direct
 }
 
 fn read_bedrock_port(props_path: &Path) -> Option<u16> {

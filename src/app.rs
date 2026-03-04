@@ -771,29 +771,19 @@ impl App {
     fn toggle_pack_by_index(&mut self, is_resource: bool, idx: usize) {
         let server = &self.servers[self.selected];
 
-        let (json_path, uuid, version, currently_enabled) = if is_resource {
+        let (uuid, version, currently_enabled) = if is_resource {
             let pack = &server.installed_resource_packs[idx];
-
-            (
-                server.path.join("resource_packs.json"),
-                pack.uuid.clone(),
-                pack.version.clone(),
-                pack.enabled,
-            )
+            (pack.uuid.clone(), pack.version.clone(), pack.enabled)
         } else {
             let pack = &server.installed_behavior_packs[idx];
-            (
-                server.path.join("behavior_packs.json"),
-                pack.uuid.clone(),
-                pack.version.clone(),
-                pack.enabled,
-            )
+            (pack.uuid.clone(), pack.version.clone(), pack.enabled)
         };
 
         match crate::plugin::installer::set_pack_enabled(
-            &json_path,
+            &server.path,
             &uuid,
             &version,
+            is_resource,
             !currently_enabled,
         ) {
             Ok(()) => {
