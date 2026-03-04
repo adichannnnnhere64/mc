@@ -415,7 +415,6 @@ fn render_detail(app: &App, frame: &mut Frame, area: Rect) {
             Span::styled("  Status:   ", label_style),
             Span::styled(
                 status_label,
-<<<<<<< HEAD
                 Style::default().fg(status_color).add_modifier(Modifier::BOLD),
             ),
         ]),

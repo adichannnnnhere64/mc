@@ -8,8 +8,8 @@ use crate::{
     connection::ConnectionConfig,
     event::{AppEvent, Event, EventHandler},
     server::{
-        discover_servers, read_docker_logs, read_server_properties, restart_server,
-        send_server_command, write_server_properties, ServerInstance, ServerStatus,
+        ServerInstance, ServerStatus, discover_servers, read_docker_logs, read_server_properties,
+        restart_server, send_server_command, write_server_properties,
     },
     ui,
 };
@@ -34,11 +34,19 @@ pub enum AppMode {
         step: ConnectionStep,
     },
     ManageConnections,
-    RemoveConnection { selected: usize },
-    ViewLogs { scroll: usize },
-    ManagePacks { selected: usize },
+    RemoveConnection {
+        selected: usize,
+    },
+    ViewLogs {
+        scroll: usize,
+    },
+    ManagePacks {
+        selected: usize,
+    },
     /// Modal to type and send a command to the selected server.
-    SendCommand { input: String },
+    SendCommand {
+        input: String,
+    },
     /// In-panel editor for server.properties.
     EditConfig {
         props: Vec<(String, String)>,
@@ -199,7 +207,9 @@ impl App {
                     return;
                 }
                 if matches!(self.servers[self.selected].status, ServerStatus::Running) {
-                    self.mode = AppMode::SendCommand { input: String::new() };
+                    self.mode = AppMode::SendCommand {
+                        input: String::new(),
+                    };
                 } else {
                     self.message = Some("Server is not running.".into());
                 }
@@ -605,14 +615,23 @@ impl App {
         if is_editing {
             match key.code {
                 KeyCode::Esc => {
-                    if let AppMode::EditConfig { editing, edit_input, .. } = &mut self.mode {
+                    if let AppMode::EditConfig {
+                        editing,
+                        edit_input,
+                        ..
+                    } = &mut self.mode
+                    {
                         *editing = false;
                         edit_input.clear();
                     }
                 }
                 KeyCode::Enter => {
-                    if let AppMode::EditConfig { props, selected, editing, edit_input } =
-                        &mut self.mode
+                    if let AppMode::EditConfig {
+                        props,
+                        selected,
+                        editing,
+                        edit_input,
+                    } = &mut self.mode
                     {
                         let new_val = edit_input.clone();
                         props[*selected].1 = new_val;
@@ -650,8 +669,12 @@ impl App {
                     }
                 }
                 KeyCode::Enter => {
-                    if let AppMode::EditConfig { props, selected, editing, edit_input } =
-                        &mut self.mode
+                    if let AppMode::EditConfig {
+                        props,
+                        selected,
+                        editing,
+                        edit_input,
+                    } = &mut self.mode
                     {
                         *edit_input = props[*selected].1.clone();
                         *editing = true;
@@ -809,6 +832,7 @@ impl App {
                     self.message = Some(format!("Install error: {err}"));
                 }
             },
+            AppEvent::UpdateStatuses => self.update_statuses(),
             AppEvent::LogsLoaded(lines) => {
                 self.log_lines = lines;
                 self.message = None;
@@ -854,8 +878,6 @@ impl App {
         });
     }
 
-
-
     fn run_load_logs(&self, container: String) {
         let sender = self.events.sender();
 
@@ -865,6 +887,12 @@ impl App {
                 .unwrap_or_default();
             let _ = sender.send(Event::App(AppEvent::LogsLoaded(lines)));
         });
+    }
+
+    fn update_statuses(&mut self) {
+        for server in &mut self.servers {
+            server.refresh_status();
+        }
     }
 
     fn run_install(&self, path: PathBuf, custom_name: Option<String>) {

@@ -26,6 +26,7 @@ pub enum AppEvent {
     ServersRefreshed(Vec<ServerInstance>),
     CommandSent(Result<String, String>),
     ServerRestarted(Result<String, String>),
+    UpdateStatuses,
 }
 
 #[derive(Debug)]
