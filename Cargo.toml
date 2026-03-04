@@ -1,5 +1,5 @@
 [package]
-name = "minecraft-plugin-installer"
+name = "minecraft-server-tool"
 version = "0.1.0"
 description = "minecraft server management and plugin management tool"
 authors = ["Adrian <aradores@repay.ph>"]
