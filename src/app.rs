@@ -289,7 +289,7 @@ impl App {
                         step,
                         path_input,
                         name_input,
-                    } => (step.clone(), path_input.clone(), name_input.clone()),
+                    } => (step, path_input.clone(), name_input.clone()),
                     _ => return,
                 };
                 match step {

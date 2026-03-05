@@ -936,7 +936,7 @@ dependencies = [
 
 [[package]]
 name = "minecraft-server-tool"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "color-eyre",

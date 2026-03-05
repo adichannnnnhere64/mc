@@ -962,7 +962,7 @@ pub fn write_server_properties(
 /// Detect if server process is running
 
 fn detect_server_process(server_path: &Path) -> ServerStatus {
-    let server_name = server_path
+    let _server_name = server_path
         .file_name()
         .unwrap_or_default()
         .to_string_lossy();
