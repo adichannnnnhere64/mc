@@ -1,6 +1,6 @@
 [package]
 name = "minecraft-server-tool"
-version = "0.1.2"
+version = "0.1.3"
 description = "minecraft server management and plugin management tool"
 authors = ["Adrian <aradores@repay.ph>"]
 license = "MIT"
