@@ -12,7 +12,7 @@ use ratatui::{
 };
 
 use crate::{
-    app::{App, AppMode, ConnectionStep, InstallStep},
+    app::{App, AppMode, ConnectionStep, InstallKind, InstallStep},
     server::{ServerStatus, ServerType},
 };
 
@@ -196,23 +196,17 @@ fn render_manage_packs(app: &App, selected: usize, moving: bool, frame: &mut Fra
         } else {
             " Manage Packs "
         })
-        .title_style(
-            if moving {
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            },
-        )
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(if moving {
-            Color::Green
+        .title_style(if moving {
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD)
         } else {
-            Color::Yellow
-        }));
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        })
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(if moving { Color::Green } else { Color::Yellow }));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -588,7 +582,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
                 Span::raw("  "),
                 kb(" m ", "manage"),
                 Span::raw("  "),
-                kb(" i ", "install"),
+                kb(" i ", "install/import"),
                 Span::raw("  "),
                 kb(" c ", "cmd"),
                 Span::raw("  "),
@@ -603,18 +597,37 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
                 kb(" r ", "refresh"),
             ]),
 
-            AppMode::Installing { step, .. } => {
+            AppMode::Installing {
+                step, install_kind, ..
+            } => {
                 let (prompt, next_hint) = match step {
                     InstallStep::Path => ("Enter path", "next"),
-                    InstallStep::Name => ("Enter name (optional)", "finish"),
+                    InstallStep::WorldAction => ("Select world action", "choose"),
+                    InstallStep::Name => match install_kind {
+                        InstallKind::Plugin => ("Enter name (optional)", "finish"),
+                        InstallKind::WorldCreate => ("Enter world name (optional)", "finish"),
+                        InstallKind::WorldModify => ("Enter target world name", "finish"),
+                    },
                 };
-                Line::from(vec![
-                    Span::styled(format!(" {} ", prompt), Style::default().fg(Color::Cyan)),
-                    Span::raw("  "),
-                    kb(" Enter ", next_hint),
-                    Span::raw("  "),
-                    kb(" Esc ", "cancel"),
-                ])
+                if matches!(step, InstallStep::WorldAction) {
+                    Line::from(vec![
+                        Span::styled(format!(" {} ", prompt), Style::default().fg(Color::Cyan)),
+                        Span::raw("  "),
+                        kb(" c ", "create"),
+                        Span::raw("  "),
+                        kb(" m ", "modify"),
+                        Span::raw("  "),
+                        kb(" Esc ", "cancel"),
+                    ])
+                } else {
+                    Line::from(vec![
+                        Span::styled(format!(" {} ", prompt), Style::default().fg(Color::Cyan)),
+                        Span::raw("  "),
+                        kb(" Enter ", next_hint),
+                        Span::raw("  "),
+                        kb(" Esc ", "cancel"),
+                    ])
+                }
             }
 
             AppMode::AddConnection { step, .. } => {
@@ -729,17 +742,18 @@ fn render_install_modal(app: &App, frame: &mut Frame, area: Rect) {
     let popup = centered_rect(70, 40, area);
     frame.render_widget(Clear, popup);
 
-    let (step, path_input, name_input) = match &app.mode {
+    let (step, install_kind, path_input, name_input) = match &app.mode {
         AppMode::Installing {
             step,
+            install_kind,
             path_input,
             name_input,
-        } => (step, path_input, name_input),
+        } => (step, install_kind, path_input, name_input),
         _ => return,
     };
 
     let block = Block::bordered()
-        .title(" Install Plugin ")
+        .title(" Install / Import ")
         .title_style(
             Style::default()
                 .fg(Color::Yellow)
@@ -763,10 +777,47 @@ fn render_install_modal(app: &App, frame: &mut Frame, area: Rect) {
             ]),
             Line::from(""),
             Line::from(Span::styled(
-                "  Supports: folder, .zip, .mcaddon",
+                "  Supports: folder, .zip, .mcaddon, .mcworld",
                 Style::default().fg(Color::DarkGray),
             )),
         ]),
+        InstallStep::WorldAction => {
+            let mode = match install_kind {
+                InstallKind::WorldCreate => "create (new world folder)",
+                InstallKind::WorldModify => "modify (replace existing world folder)",
+                InstallKind::Plugin => "create (new world folder)",
+            };
+            Text::from(vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("  Path: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(path_input.to_owned(), Style::default().fg(Color::Cyan)),
+                ]),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  Select action for this .mcworld file:",
+                    Style::default().fg(Color::White),
+                )),
+                Line::from(vec![
+                    Span::styled("   • ", Style::default().fg(Color::Green)),
+                    Span::styled("c", Style::default().fg(Color::Green)),
+                    Span::styled(" = create new world", Style::default().fg(Color::DarkGray)),
+                ]),
+                Line::from(vec![
+                    Span::styled("   • ", Style::default().fg(Color::Yellow)),
+                    Span::styled("m", Style::default().fg(Color::Yellow)),
+                    Span::styled(
+                        " = modify existing world",
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("  Selected: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(mode, Style::default().fg(Color::White)),
+                ]),
+            ])
+        }
         InstallStep::Name => Text::from(vec![
             Line::from(""),
             Line::from(vec![
@@ -774,7 +825,14 @@ fn render_install_modal(app: &App, frame: &mut Frame, area: Rect) {
                 Span::styled(path_input.to_owned(), Style::default().fg(Color::Cyan)),
             ]),
             Line::from(vec![
-                Span::styled("  Name: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    match install_kind {
+                        InstallKind::Plugin => "  Name: ",
+                        InstallKind::WorldCreate => "  World Name: ",
+                        InstallKind::WorldModify => "  Target World: ",
+                    },
+                    Style::default().fg(Color::DarkGray),
+                ),
                 Span::styled(name_input.to_owned(), Style::default().fg(Color::White)),
                 Span::styled(
                     "█",
@@ -785,7 +843,11 @@ fn render_install_modal(app: &App, frame: &mut Frame, area: Rect) {
             ]),
             Line::from(""),
             Line::from(Span::styled(
-                "  Leave empty to use folder name",
+                match install_kind {
+                    InstallKind::Plugin => "  Leave empty to use manifest/folder name",
+                    InstallKind::WorldCreate => "  Leave empty to use archive file name",
+                    InstallKind::WorldModify => "  Required: existing world folder name",
+                },
                 Style::default().fg(Color::DarkGray),
             )),
         ]),

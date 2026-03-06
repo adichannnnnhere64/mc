@@ -42,8 +42,7 @@ pub fn install(
 
     if source_path.is_dir() {
         // Copy the folder so nested archives can be expanded without modifying source.
-        copy_dir_all(source_path, &tmp)
-            .map_err(|e| color_eyre::eyre::eyre!("Copy failed: {e}"))?;
+        copy_dir_all(source_path, &tmp).map_err(|e| color_eyre::eyre::eyre!("Copy failed: {e}"))?;
         super::extractor::expand_nested_archives(&tmp)
             .map_err(|e| color_eyre::eyre::eyre!("Extraction failed: {e}"))?;
     } else {
@@ -109,7 +108,10 @@ fn install_single(
 
     // Apply custom name while preserving unknown manifest fields.
     if let Some(name) = custom_name {
-        if let Some(header) = manifest_value.get_mut("header").and_then(Value::as_object_mut) {
+        if let Some(header) = manifest_value
+            .get_mut("header")
+            .and_then(Value::as_object_mut)
+        {
             header.insert("name".to_string(), Value::String(name.clone()));
         }
         manifest.header.name = Some(name);
@@ -184,7 +186,12 @@ pub fn set_pack_enabled(
         "world_behavior_packs.json"
     };
     for world_dir in collect_world_dirs(server_path) {
-        set_pack_enabled_in_file(&world_dir.join(world_json_file), uuid, version, should_enable)?;
+        set_pack_enabled_in_file(
+            &world_dir.join(world_json_file),
+            uuid,
+            version,
+            should_enable,
+        )?;
     }
     Ok(())
 }

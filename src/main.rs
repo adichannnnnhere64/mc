@@ -4,6 +4,7 @@ pub mod event;
 pub mod plugin;
 pub mod server;
 pub mod ui;
+pub mod world;
 
 use app::App;
 

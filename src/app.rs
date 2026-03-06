@@ -15,10 +15,18 @@ use crate::{
     ui,
 };
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum InstallStep {
     Path,
+    WorldAction,
     Name,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum InstallKind {
+    Plugin,
+    WorldCreate,
+    WorldModify,
 }
 
 #[derive(Debug, PartialEq)]
@@ -26,6 +34,7 @@ pub enum AppMode {
     Normal,
     Installing {
         step: InstallStep,
+        install_kind: InstallKind,
         path_input: String,
         name_input: String,
     },
@@ -179,6 +188,7 @@ impl App {
                 if !self.servers.is_empty() {
                     self.mode = AppMode::Installing {
                         step: InstallStep::Path,
+                        install_kind: InstallKind::Plugin,
                         path_input: String::new(),
                         name_input: String::new(),
                     };
@@ -284,12 +294,13 @@ impl App {
                 self.message = None;
             }
             KeyCode::Enter => {
-                let (step, path_input, name_input) = match &self.mode {
+                let (step, install_kind, path_input, name_input) = match &self.mode {
                     AppMode::Installing {
                         step,
+                        install_kind,
                         path_input,
                         name_input,
-                    } => (step, path_input.clone(), name_input.clone()),
+                    } => (*step, *install_kind, path_input.clone(), name_input.clone()),
                     _ => return,
                 };
                 match step {
@@ -298,27 +309,77 @@ impl App {
                             self.message = Some("Path cannot be empty".into());
                             return;
                         }
-                        self.mode = AppMode::Installing {
-                            step: InstallStep::Name,
-                            path_input,
-                            name_input: String::new(),
-                        };
+                        let path = PathBuf::from(path_input.trim());
+                        if !path.exists() {
+                            self.message = Some(format!("Path not found: {}", path_input.trim()));
+                            return;
+                        }
+
+                        if is_mcworld_path(&path) {
+                            self.mode = AppMode::Installing {
+                                step: InstallStep::WorldAction,
+                                install_kind: InstallKind::WorldCreate,
+                                path_input,
+                                name_input: String::new(),
+                            };
+                        } else {
+                            self.mode = AppMode::Installing {
+                                step: InstallStep::Name,
+                                install_kind: InstallKind::Plugin,
+                                path_input,
+                                name_input: String::new(),
+                            };
+                        }
+                    }
+                    InstallStep::WorldAction => {
+                        self.message =
+                            Some("Choose world action: press 'c' (create) or 'm' (modify)".into());
                     }
                     InstallStep::Name => {
                         let path = PathBuf::from(path_input.trim());
                         if !path.exists() {
                             self.message = Some(format!("Path not found: {}", path_input.trim()));
-
                             self.mode = AppMode::Normal;
                             return;
                         }
-                        let custom_name = if name_input.trim().is_empty() {
-                            None
-                        } else {
-                            Some(name_input.trim().to_string())
-                        };
-                        self.events.send(AppEvent::InstallPlugin(path, custom_name));
-                        self.message = Some("Installing…".into());
+                        match install_kind {
+                            InstallKind::Plugin => {
+                                let custom_name = if name_input.trim().is_empty() {
+                                    None
+                                } else {
+                                    Some(name_input.trim().to_string())
+                                };
+                                self.events.send(AppEvent::InstallPlugin(path, custom_name));
+                                self.message = Some("Installing…".into());
+                            }
+                            InstallKind::WorldCreate => {
+                                let world_name = if name_input.trim().is_empty() {
+                                    None
+                                } else {
+                                    Some(name_input.trim().to_string())
+                                };
+                                self.events.send(AppEvent::ImportWorld(
+                                    path,
+                                    crate::world::WorldImportMode::Create,
+                                    world_name,
+                                ));
+                                self.message = Some("Importing world…".into());
+                            }
+                            InstallKind::WorldModify => {
+                                if name_input.trim().is_empty() {
+                                    self.message = Some(
+                                        "Target world name is required for modify mode".into(),
+                                    );
+                                    return;
+                                }
+                                self.events.send(AppEvent::ImportWorld(
+                                    path,
+                                    crate::world::WorldImportMode::Modify,
+                                    Some(name_input.trim().to_string()),
+                                ));
+                                self.message = Some("Updating world…".into());
+                            }
+                        }
                         self.mode = AppMode::Normal;
                     }
                 }
@@ -328,27 +389,56 @@ impl App {
                     step,
                     path_input,
                     name_input,
+                    ..
                 } => match step {
                     InstallStep::Path => {
                         path_input.pop();
                     }
+                    InstallStep::WorldAction => {}
                     InstallStep::Name => {
                         name_input.pop();
                     }
                 },
                 _ => {}
             },
-            KeyCode::Char(c) => match &mut self.mode {
-                AppMode::Installing {
-                    step,
-                    path_input,
-                    name_input,
-                } => match step {
-                    InstallStep::Path => path_input.push(c),
-                    InstallStep::Name => name_input.push(c),
-                },
-                _ => {}
-            },
+            KeyCode::Char(c) => {
+                let current = match &self.mode {
+                    AppMode::Installing {
+                        step, path_input, ..
+                    } => Some((*step, path_input.clone())),
+                    _ => None,
+                };
+                match current {
+                    Some((InstallStep::Path, _)) => {
+                        if let AppMode::Installing { path_input, .. } = &mut self.mode {
+                            path_input.push(c);
+                        }
+                    }
+                    Some((InstallStep::WorldAction, path_input)) => {
+                        if matches!(c, 'c' | 'C') {
+                            self.mode = AppMode::Installing {
+                                step: InstallStep::Name,
+                                install_kind: InstallKind::WorldCreate,
+                                path_input,
+                                name_input: String::new(),
+                            };
+                        } else if matches!(c, 'm' | 'M') {
+                            self.mode = AppMode::Installing {
+                                step: InstallStep::Name,
+                                install_kind: InstallKind::WorldModify,
+                                path_input,
+                                name_input: String::new(),
+                            };
+                        }
+                    }
+                    Some((InstallStep::Name, _)) => {
+                        if let AppMode::Installing { name_input, .. } = &mut self.mode {
+                            name_input.push(c);
+                        }
+                    }
+                    None => {}
+                }
+            }
 
             _ => {}
         }
@@ -367,7 +457,12 @@ impl App {
                         path_input,
                         container_input,
                         step,
-                    } => (input.clone(), path_input.clone(), container_input.clone(), step),
+                    } => (
+                        input.clone(),
+                        path_input.clone(),
+                        container_input.clone(),
+                        step,
+                    ),
                     _ => return,
                 };
                 match step {
@@ -1010,6 +1105,18 @@ impl App {
                     self.message = Some(format!("Install error: {err}"));
                 }
             },
+            AppEvent::ImportWorld(path, mode, target_world) => {
+                self.run_world_import(path, mode, target_world)
+            }
+            AppEvent::ImportWorldDone(result) => match result {
+                Ok(msg) => {
+                    self.message = Some(msg);
+                    self.run_auto_refresh();
+                }
+                Err(err) => {
+                    self.message = Some(format!("World import error: {err}"));
+                }
+            },
             AppEvent::UpdateStatuses => self.run_update_statuses(),
             AppEvent::StatusesUpdated(updates) => {
                 self.status_refresh_pending = false;
@@ -1140,6 +1247,34 @@ impl App {
             let _ = sender.send(Event::App(AppEvent::InstallDone(msg)));
         });
     }
+
+    fn run_world_import(
+        &self,
+        path: PathBuf,
+        mode: crate::world::WorldImportMode,
+        target_world: Option<String>,
+    ) {
+        let server_path = self.servers[self.selected].path.clone();
+        let sender = self.events.sender();
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                crate::world::import_mcworld(&server_path, &path, mode, target_world)
+                    .map_err(|e| e.to_string())
+            })
+            .await;
+            let msg = match result {
+                Ok(r) => r,
+                Err(e) => Err(e.to_string()),
+            };
+            let _ = sender.send(Event::App(AppEvent::ImportWorldDone(msg)));
+        });
+    }
+}
+
+fn is_mcworld_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("mcworld"))
 }
 
 fn discover_servers_with_connections(

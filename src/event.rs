@@ -5,6 +5,7 @@ use std::{path::PathBuf, time::Duration};
 use tokio::sync::mpsc;
 
 use crate::server::{ServerInstance, StatusUpdate};
+use crate::world::WorldImportMode;
 
 const TICK_FPS: f64 = 30.0;
 
@@ -22,6 +23,8 @@ pub enum AppEvent {
     SelectPrev,
     InstallPlugin(PathBuf, Option<String>), // path, optional custom name
     InstallDone(Result<String, String>),
+    ImportWorld(PathBuf, WorldImportMode, Option<String>), // path, mode, world name (optional for create)
+    ImportWorldDone(Result<String, String>),
     LogsLoaded(Vec<String>),
     ServersRefreshed(Vec<ServerInstance>),
     CommandSent(Result<String, String>),
